@@ -1,0 +1,378 @@
+## Commands
+This section lists command(s) run by purityEstimateV3 workflow
+
+* Running purityEstimateV3
+
+```
+      set -euo pipefail
+      # Bind interpolated values to shell variables: WDL substitutes them at generation
+      # time, so testing them directly produces a script full of constant comparisons.
+      mode="~{mode}"
+      errors=()
+
+      case "${mode}" in
+        WG)
+          ~{if has_tumor then "true" else "false"} || errors+=("mode WG requires tumor_alignments")
+          ;;
+        WG_PE)
+          ~{if has_tumor then "true" else "false"} || errors+=("mode WG_PE requires tumor_alignments")
+          ~{if has_longitudinal then "true" else "false"} || errors+=("mode WG_PE requires longitudinal_alignments")
+          ;;
+        PE)
+          ~{if has_longitudinal then "true" else "false"} || errors+=("mode PE requires longitudinal_alignments")
+          ~{if has_wgts_tarball then "true" else "false"} || errors+=("mode PE requires wgts_tarball from a prior WG run")
+          ~{if has_tumor_sample_id then "true" else "false"} || errors+=("mode PE requires tumor_sample_id: there are no tumour alignments to read it from")
+          ;;
+        *)
+          errors+=("mode must be WG, PE or WG_PE, got '${mode}'")
+          ;;
+      esac
+
+      if ~{run_control}; then
+        ~{if has_controls then "true" else "false"} || errors+=("run_control=true requires the controls array")
+        case "${mode}" in
+          PE|WG_PE) ;;
+          *) errors+=("run_control is only meaningful in PE or WG_PE mode") ;;
+        esac
+      fi
+
+      if [ "${#errors[@]}" -gt 0 ]; then
+        echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
+        for e in "${errors[@]}"; do
+          echo "  - ${e}" >&2
+        done
+        exit 1
+      fi
+
+      # Advisory only: these combinations run, but not the way people usually expect.
+      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
+        echo "note: no normal_alignments, so WGTS runs tumour-only and purity estimation has no LOH input" >&2
+      fi
+
+      echo "inputs OK for mode ${mode}"
+```
+```
+      set -euo pipefail
+      samtools view -H ~{aln_path} > header.txt
+
+      # Sample ID from the first @RG SM tag.
+      awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^SM:/){sub(/^SM:/,"",$i); print $i; exit}}' \
+        header.txt > sample_id.txt
+      [ -s sample_id.txt ] || { echo "ERROR: no @RG SM tag in ~{aln_path}" >&2; exit 1; }
+
+      # Refuse a file carrying several different samples: taking the first SM would be wrong.
+      distinct=$(awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^SM:/) print $i}' header.txt | sort -u | wc -l)
+      if [ "${distinct}" -ne 1 ]; then
+        echo "ERROR: ${distinct} distinct @RG SM values in ~{aln_path}; expected exactly 1" >&2
+        exit 1
+      fi
+
+      # Platform from @RG PL, lowercased to match --sequencing_platform (ULTIMA -> ultima).
+      # Absent PL is treated as Illumina, which is also oncoanalyser's own default.
+      awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^PL:/){sub(/^PL:/,"",$i); print tolower($i); exit}}' \
+        header.txt > platform.txt
+      [ -s platform.txt ] || echo illumina > platform.txt
+```
+```
+      set -euo pipefail
+      # Cromwell localizes the CRAM and its index into different directories, so symlink
+      # both here with matching basenames for samtools to find the index.
+      ln -s ~{aln} ./input.cram
+      ln -s ~{idx} ./input.cram.crai
+
+      [ -s "~{cram_reference}" ] || {
+        echo "ERROR: CRAM reference not readable: ~{cram_reference}" >&2
+        exit 1
+      }
+
+      samtools view -@ ~{threads} -T ~{cram_reference} -b -o converted.bam ./input.cram
+      samtools index -@ ~{threads} converted.bam
+```
+```
+      set -euo pipefail
+      # Symlink BAM and BAI preserving the original filenames so samtools can
+      # locate the index automatically (it derives the index path from the BAM
+      # path; renaming would break that lookup).
+      ln -s ~{bam} .
+      ln -s ~{bai} .
+      bam_name=$(basename ~{bam})
+      samtools view -h -@ 2 "${bam_name}" ~{chr} \
+        | awk '/^@/{print;next} $7=="="' \
+        | samtools sort -n -u -@ 2 -m 1G - \
+        | samtools fixmate -m -u -@ 2 - - \
+        | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
+      samtools index ~{chr}.fixedmate.bam
+```
+```
+      set -euo pipefail
+      # -f 1:  paired
+      # -F 12: neither read nor mate unmapped
+      # awk:   keep header lines and reads where mate is on a different chromosome
+      # No index needed: full-file sequential scan.
+      samtools view -h -@ 2 -f 1 -F 12 ~{bam} \
+        | awk '/^@/{print;next} $7!="="' \
+        | samtools sort -n -u -@ 2 -m 1G - \
+        | samtools fixmate -m -u -@ 2 - - \
+        | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -
+      samtools index discordant.fixedmate.bam
+```
+```
+      set -euo pipefail
+      bam_list=(~{sep=" " bams})
+
+      merge_stream() {
+        if [ "${#bam_list[@]}" -gt 1 ]; then
+          samtools merge -f -c -p -u -@ ~{threads} - "${bam_list[@]}"
+        else
+          samtools view -h -u "${bam_list[0]}"
+        fi
+      }
+
+      # @PG stripping: bwa embeds tab-separated fields in CL: causing htsjdk to produce a
+      # spurious second ID: field -> SAMFormatException in Redux.
+      # Flag fix: per-chromosome fixmate may clear 0x1 while leaving 0x40/0x80 set on
+      # discordant-mate reads; htsjdk treats this as a validation error.
+      if ~{sanitize_header}; then
+        merge_stream \
+          | samtools view -h -@ ~{threads} \
+          | awk 'BEGIN{OFS="\t"} /^@PG/{next} /^@/{print;next} {
+              f=int($2)
+              if (and(f,1)==0) { f=f-and(f,64)-and(f,128); $2=f }
+              print
+            }' \
+          | samtools view -@ ~{threads} -O BAM -o merged.bam
+      else
+        merge_stream | samtools view -@ ~{threads} -O BAM -o merged.bam
+      fi
+
+      samtools index -@ ~{threads} merged.bam
+```
+```
+      set -euo pipefail
+      mkdir -p wgts_extracted
+      tar -xzf ~{tarball} -C wgts_extracted/
+      echo "$(pwd)/wgts_extracted" > output_dir.txt
+```
+```
+        set -euo pipefail
+
+        ## concatenate the summaries
+        cat ~{subject_summary} > ~{outputFileNamePrefix}.wisp_summary.tsv
+        for f in ~{sep=" " control_summaries}
+        do
+            tail -n1 $f >> ~{outputFileNamePrefix}.wisp_summary.tsv
+        done
+
+        ## retar the tarballs
+        mkdir -p wisp
+        for tgz in ~{subject_tarball} ~{sep=" " control_tarballs}
+        do
+            tar -xvf $tgz -C wisp/ --strip-components=1
+        done
+        tar -cvzf ~{outputFileNamePrefix}.wisp.tar.gz wisp/*
+```
+```
+      set -euo pipefail
+      mkdir -p ~{outdir}
+      abs_outdir=$(readlink -f ~{outdir})
+
+      WORKDIR=$(pwd)
+
+      # Optional inputs render as the empty string when absent, so capture them in shell
+      # variables and branch on those rather than testing the interpolation directly.
+      normal_bam="~{normal_bam}"
+      normal_bai="~{normal_bai}"
+      normal_sample_id="~{normal_sample_id}"
+
+      ln -s "~{tumor_bam}" "${WORKDIR}/~{tumor_sample_id}.bam"
+      ln -s "~{tumor_bai}" "${WORKDIR}/~{tumor_sample_id}.bam.bai"
+      if [ -n "${normal_bam}" ]; then
+        ln -s "${normal_bam}" "${WORKDIR}/${normal_sample_id}.bam"
+        ln -s "${normal_bai}" "${WORKDIR}/${normal_sample_id}.bam.bai"
+      fi
+
+      # run_redux=false means "these are already REDUX alignments". REDUX still runs, but
+      # with -bqr_jitter_msi_only, regenerating only the TSVs and symlinking the input as
+      # the redux BAM. --skip_msi_jitter was removed in 3.x and must not be passed.
+      if ~{run_redux}; then
+        filetype="bam"
+        info=""
+      else
+        filetype="bam_redux"
+        info="generate_redux_tsvs_only"
+      fi
+
+      # Index rows are omitted: oncoanalyser finds <alignment>.bai by adjacency, and the
+      # symlinks above put it there.
+      {
+        echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
+        if [ -n "${normal_bam}" ]; then
+          echo "~{group_id},~{subject_id},${normal_sample_id},normal,dna,${filetype},${info},${WORKDIR}/${normal_sample_id}.bam"
+        fi
+        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,${filetype},${info},${WORKDIR}/~{tumor_sample_id}.bam"
+      } > samplesheet.csv
+
+      # -stub makes every process emit placeholder outputs, so the wrapper can be exercised
+      # end to end in minutes. --create_stub_placeholders also fabricates the genome files
+      # the pipeline would otherwise insist on finding.
+      stub_args=()
+      if ~{nextflow_stub}; then
+        stub_args=(-stub --create_stub_placeholders)
+      fi
+
+      export NXF_OFFLINE=true
+      export NXF_OPTS="-Xms512m -Xmx8g"
+      export NXF_SINGULARITY_CACHEDIR=~{images_dir}
+      export NXF_HOME=~{nextflow_home}
+      # A loaded oncoanalyser 2.x module points these at its read-only tree.
+      unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
+
+      bin_dir="$(pwd)/bin"
+      mkdir -p "${bin_dir}"
+      cp ~{qsub_wrapper} "${bin_dir}/qsub"
+      chmod +x "${bin_dir}/qsub"
+      export PATH="${bin_dir}:$PATH"
+
+      ~{nextflow_bin} run ~{pipeline_dir}/main.nf \
+          --mode wgts \
+          --sequencing_platform ~{sequencing_platform} \
+          --input samplesheet.csv \
+          --outdir ~{outdir} \
+          --genome GRCh38_hmf \
+          --processes_manual redux,amber,cobalt,sage,pave,purple \
+          --igenomes_base ~{ref_data_dir} \
+          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_hmf_data_path ~{ref_data_dir} \
+          -profile singularity \
+          -c ~{oicr_config} \
+          "${stub_args[@]}" \
+          -resume
+
+      echo "${abs_outdir}/~{group_id}" > output_dir.txt
+
+      # alignments/ is excluded on purpose: it holds full REDUX BAMs. A chained PE run reads
+      # the primary outputs from disk, not from this tarball.
+      #
+      # Collect only the directories that exist, so a run that legitimately produces fewer
+      # of them (e.g. tumour-only, where nothing germline is written) does not fail at the
+      # very last step after hours of compute.
+      tar_dirs=()
+      for d in amber cobalt purple pave sage; do
+        if [ -d "${abs_outdir}/~{group_id}/${d}" ]; then
+          tar_dirs+=("${d}/")
+        else
+          echo "note: ${d}/ not present in the output, omitting from the tarball" >&2
+        fi
+      done
+      if [ "${#tar_dirs[@]}" -eq 0 ]; then
+        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
+        exit 1
+      fi
+      tar -czf ~{outdir}.wgts.tar.gz \
+          -C "${abs_outdir}/~{group_id}" \
+          "${tar_dirs[@]}"
+
+      tar -czf ~{outdir}.pipeline_info.tar.gz \
+          -C "${abs_outdir}" \
+          pipeline_info/
+```
+```
+      set -euo pipefail
+      WORKDIR=$(pwd)
+
+      # Optional inputs render as the empty string when absent, so capture them in shell
+      # variables and branch on those rather than testing the interpolation directly.
+      normal_bam="~{normal_bam}"
+      normal_bai="~{normal_bai}"
+      normal_sample_id="~{normal_sample_id}"
+
+      ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
+      ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
+      if [ -n "${normal_bam}" ]; then
+        ln -s "${normal_bam}" "${WORKDIR}/${normal_sample_id}.bam"
+        ln -s "${normal_bai}" "${WORKDIR}/${normal_sample_id}.bam.bai"
+      fi
+
+      if ~{run_redux}; then
+        filetype="bam"
+        redux_info=""
+      else
+        filetype="bam_redux"
+        redux_info="generate_redux_tsvs_only"
+      fi
+
+      # The longitudinal sample carries longitudinal_sample, plus the redux hint when
+      # applicable; multiple info fields are separated by ';'.
+      long_info="longitudinal_sample"
+      if [ -n "${redux_info}" ]; then
+        long_info="longitudinal_sample;${redux_info}"
+      fi
+
+      # AMBER only earns its keep when a primary normal is available for LOH, and
+      # oncoanalyser errors on an amber_dir input without one.
+      if [ -n "${normal_bam}" ]; then
+        processes="redux,amber,cobalt,sage_append,wisp"
+      else
+        processes="redux,cobalt,sage_append,wisp"
+      fi
+
+      # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
+      # sample: oncoanalyser treats that as a fatal input clash.
+      {
+        echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
+        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{wgts_outdir}/purple/"
+        if [ -n "${normal_bam}" ]; then
+          echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,amber_dir,,~{wgts_outdir}/amber/"
+          echo "~{group_id},~{subject_id},${normal_sample_id},normal,dna,${filetype},${redux_info},${WORKDIR}/${normal_sample_id}.bam"
+        fi
+        echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
+      } > samplesheet_purity.csv
+
+      # -stub makes every process emit placeholder outputs, so the wrapper can be exercised
+      # end to end in minutes. --create_stub_placeholders also fabricates the genome files
+      # the pipeline would otherwise insist on finding.
+      stub_args=()
+      if ~{nextflow_stub}; then
+        stub_args=(-stub --create_stub_placeholders)
+      fi
+
+      export NXF_OFFLINE=true
+      export NXF_OPTS="-Xms512m -Xmx8g"
+      export NXF_SINGULARITY_CACHEDIR=~{images_dir}
+      export NXF_HOME=~{nextflow_home}
+      unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
+
+      bin_dir="$(pwd)/bin"
+      mkdir -p "${bin_dir}"
+      cp ~{qsub_wrapper} "${bin_dir}/qsub"
+      chmod +x "${bin_dir}/qsub"
+      export PATH="${bin_dir}:$PATH"
+
+      ~{nextflow_bin} run ~{pipeline_dir}/main.nf \
+          --mode purity_estimate \
+          --purity_estimate_mode wgts \
+          --sequencing_platform ~{sequencing_platform} \
+          --input samplesheet_purity.csv \
+          --outdir ~{outdir} \
+          --genome GRCh38_hmf \
+          --processes_manual ${processes} \
+          --igenomes_base ~{ref_data_dir} \
+          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_hmf_data_path ~{ref_data_dir} \
+          -profile singularity \
+          -c ~{oicr_config} \
+          "${stub_args[@]}" \
+          -resume
+
+      abs_outdir=$(readlink -f ~{outdir})
+      wisp_dir="~{outdir}/~{group_id}/wisp"
+      tar -czf ~{outdir}.wisp.tar.gz -C "$(dirname "$wisp_dir")" wisp/
+
+      # prepend subject_id as first column in summary
+      head -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/sample_id\t/' >  ~{outdir}.wisp_summary.tsv
+      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{subject_id}\t/' >> ~{outdir}.wisp_summary.tsv
+
+      tar -czf ~{outdir}.pipeline_info.tar.gz \
+          -C "${abs_outdir}" \
+          pipeline_info/
+```

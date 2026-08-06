@@ -21,7 +21,6 @@ This section lists command(s) run by purityEstimateV3 workflow
         PE)
           ~{if has_longitudinal then "true" else "false"} || errors+=("mode PE requires longitudinal_alignments")
           ~{if has_wgts_tarball then "true" else "false"} || errors+=("mode PE requires wgts_tarball from a prior WG run")
-          ~{if has_tumor_sample_id then "true" else "false"} || errors+=("mode PE requires tumor_sample_id: there are no tumour alignments to read it from")
           ;;
         *)
           errors+=("mode must be WG, PE or WG_PE, got '${mode}'")
@@ -152,6 +151,43 @@ This section lists command(s) run by purityEstimateV3 workflow
       mkdir -p wgts_extracted
       tar -xzf ~{tarball} -C wgts_extracted/
       echo "$(pwd)/wgts_extracted" > output_dir.txt
+
+      # Work out the primary tumour sample ID from the PURPLE filenames rather than trusting a
+      # hand-typed input. SAGE_APPEND reads <tumor_sample_id>.purple.somatic.vcf.gz, so a wrong
+      # ID fails with "invalid path for config: input_vcf = ..." only AFTER REDUX and COBALT
+      # have run. The WG step names these files from the tumour BAM's @RG SM tag, which is
+      # rarely the same string as group_id -- an easy and expensive mistake to make by hand.
+      shopt -s nullglob
+      ids=()
+      for f in wgts_extracted/purple/*.purple.purity.tsv; do
+        ids+=("$(basename "$f" .purple.purity.tsv)")
+      done
+
+      if [ "${#ids[@]}" -ne 1 ]; then
+        echo "ERROR: expected exactly one *.purple.purity.tsv under purple/, found ${#ids[@]}" >&2
+        printf '  %s\n' "${ids[@]+${ids[@]}}" >&2
+        exit 1
+      fi
+
+      tumor_sample_id="${ids[0]}"
+      echo "${tumor_sample_id}" > tumor_sample_id.txt
+
+      # SAGE_APPEND needs this specific file; check now, not an hour in.
+      vcf="wgts_extracted/purple/${tumor_sample_id}.purple.somatic.vcf.gz"
+      if [ ! -s "${vcf}" ]; then
+        echo "ERROR: tarball has no ${vcf}, which SAGE_APPEND requires" >&2
+        exit 1
+      fi
+
+      expected="~{expected_tumor_sample_id}"
+      if [ -n "${expected}" ] && [ "${expected}" != "${tumor_sample_id}" ]; then
+        echo "ERROR: tumor_sample_id '${expected}' does not match the WG outputs, which are" >&2
+        echo "       named for '${tumor_sample_id}'. Omit tumor_sample_id to use the value" >&2
+        echo "       derived from the tarball." >&2
+        exit 1
+      fi
+
+      echo "primary tumour sample ID: ${tumor_sample_id}"
 ```
 ```
         set -euo pipefail
@@ -183,6 +219,31 @@ This section lists command(s) run by purityEstimateV3 workflow
       normal_bam="~{normal_bam}"
       normal_bai="~{normal_bai}"
       normal_sample_id="~{normal_sample_id}"
+      normal_platform="~{normal_platform}"
+
+      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
+      # samples below. Refuse rather than silently apply the wrong error model to one of them.
+      if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
+        {
+          echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
+          echo "  this run uses --sequencing_platform ~{sequencing_platform}"
+          echo "  but the normal sample is ${normal_platform}"
+          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
+          echo "would be analysed with the wrong error model."
+        } >&2
+        if ~{allow_mixed_platforms}; then
+          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
+          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
+        else
+          {
+            echo "REFUSING TO LAUNCH. Options:"
+            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
+            echo "  - use samples sequenced on one platform"
+            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
+          } >&2
+          exit 1
+        fi
+      fi
 
       ln -s "~{tumor_bam}" "${WORKDIR}/~{tumor_sample_id}.bam"
       ln -s "~{tumor_bai}" "${WORKDIR}/~{tumor_sample_id}.bam.bai"
@@ -285,6 +346,31 @@ This section lists command(s) run by purityEstimateV3 workflow
       normal_bam="~{normal_bam}"
       normal_bai="~{normal_bai}"
       normal_sample_id="~{normal_sample_id}"
+      normal_platform="~{normal_platform}"
+
+      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
+      # samples below. Refuse rather than silently apply the wrong error model to one of them.
+      if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
+        {
+          echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
+          echo "  this run uses --sequencing_platform ~{sequencing_platform}"
+          echo "  but the normal sample is ${normal_platform}"
+          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
+          echo "would be analysed with the wrong error model."
+        } >&2
+        if ~{allow_mixed_platforms}; then
+          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
+          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
+        else
+          {
+            echo "REFUSING TO LAUNCH. Options:"
+            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
+            echo "  - use samples sequenced on one platform"
+            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
+          } >&2
+          exit 1
+        fi
+      fi
 
       ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
       ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"

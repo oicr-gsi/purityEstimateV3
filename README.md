@@ -1,6 +1,8 @@
 # purityEstimateV3
 
-Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina, Roche SBX or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.
+## Overview
+
+Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.
 
 ### One sequencing platform per pipeline run
 
@@ -8,29 +10,35 @@ oncoanalyser applies a single --sequencing_platform to a whole pipeline run and 
 
 Note that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.
 
-Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides it for data with a missing or wrong tag. Two consequences are enforced:
+Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides it for data with a missing or wrong tag. Three consequences are enforced:
 
 * fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.
-* if samples inside one pipeline run disagree on platform, the run is refused before Nextflow starts, unless `allow_mixed_platforms` is true.
+* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.
+* the PE run processes only the longitudinal sample, so it is always single-platform and needs no such check.
+
+### Germline calls and LOH
+
+**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration: `enable_germline` is a hardcoded literal in `workflows/wgts.nf`. They are therefore still produced, but excluded from the WG archive because MRD does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. Note the calls still exist in the Nextflow work directory until it is cleaned, so this controls delivery rather than generation.
+
+**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. WISP's AMBER_LOH method needs the primary normal as a `redux_dir` samplesheet input, because `wisp_analysis` derives the normal alignment from `REDUX_DIR_NORMAL`; a normal supplied as a BAM is accepted by samplesheet validation and then silently ignored, and `-amber_dir` is never passed. The PE run consequently does not take the normal at all: it would serve only LOH, while costing a second REDUX pass plus AMBER for no result. The SNV estimate is unaffected either way, because SAGE_APPEND is only ever given the longitudinal sample's REDUX output.
 
 ### Valid input combinations
 
 | mode | tumor_alignments | normal_alignments | longitudinal_alignments | wgts_tarball |
 |---|---|---|---|---|
 | WG | required | optional | - | - |
-| PE | - | optional | required | required |
+| PE | - | not used | required | required |
 | WG_PE | required | optional | required | - |
+
+`normal_alignments` is used only by the WG step, for tumour/normal somatic calling. Do not supply it in PE mode: it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded.
 
 Leave `tumor_sample_id` unset. In WG modes it comes from the tumour @RG SM tag; in PE mode it is derived from the tarball's purple/ filenames, and a supplied value that disagrees is rejected. A wrong value otherwise fails deep inside SAGE_APPEND, after REDUX and COBALT have already run.
 
-Omitting `normal_alignments` costs LOH: purity then comes from COBALT and SNVs only, with no amber_dir input.
-
 ### Recommended production shapes
 
-* Single platform with matched normal: WG_PE with tumour, normal and longitudinal samples, giving the full LOH-aware estimate.
-* Illumina primary with Ultima ctDNA: run WG on the Illumina pair, then PE against that tarball with the Ultima longitudinal sample and no normal_alignments, so each pipeline run stays single-platform. This is the validated configuration.
-
-## Overview
+* Single platform with matched normal: WG_PE with tumour, normal and longitudinal samples. The normal gives a proper tumour/normal somatic call set for the primary, which is what the MRD assessment is built on.
+* Illumina primary with Ultima ctDNA: WG_PE with the Illumina tumour and normal plus the Ultima longitudinal sample works directly. The WG run uses illumina and the PE run uses ultima. Running WG and PE as two separate jobs is equivalent.
+* Tumour-only primary: supported, but the somatic call set will be less well filtered without a matched normal.
 
 ## Dependencies
 
@@ -70,6 +78,7 @@ Parameter|Value|Default|Description
 `run_redux`|Boolean|false|When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs
 `run_control`|Boolean|false|When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)
 `controls`|Array[Pair[String,String]]?|None|PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true
+`include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work, which would save only about 2 minutes
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
 `resources_root`|String|"/.mounts/labs/gsi/src/hmftools"|Root of the staged oncoanalyser 3.x resources. Every resource path below is derived from it, so a future oncoanalyser/3.x module needs only these defaults changed
@@ -222,7 +231,15 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       # Advisory only: these combinations run, but not the way people usually expect.
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
-        echo "note: no normal_alignments, so WGTS runs tumour-only and purity estimation has no LOH input" >&2
+        echo "note: no normal_alignments, so the primary is called tumour-only" >&2
+      fi
+
+      if [ "${mode}" = "PE" ] && ~{if has_normal then "true" else "false"}; then
+        {
+          echo "note: normal_alignments is not used in PE mode. The PE run processes only the"
+          echo "      longitudinal sample, so the normal would be staged (CRAM conversion,"
+          echo "      fixmate, merge) at real cost and then discarded. Omit it."
+        } >&2
       fi
 
       echo "inputs OK for mode ${mode}"
@@ -398,25 +415,23 @@ This section lists command(s) run by purityEstimateV3 workflow
       normal_sample_id="~{normal_sample_id}"
       normal_platform="~{normal_platform}"
 
-      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
-      # samples below. Refuse rather than silently apply the wrong error model to one of them.
+      # This run processes the tumour AND the normal, but oncoanalyser applies ONE
+      # --sequencing_platform per run, so a tumour/normal pair split across platforms would
+      # get the wrong error model applied to one of them. There is no way to drop the normal
+      # from a tumour/normal analysis, so refuse unless explicitly overridden.
       if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
         {
           echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
           echo "  this run uses --sequencing_platform ~{sequencing_platform}"
           echo "  but the normal sample is ${normal_platform}"
-          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
-          echo "would be analysed with the wrong error model."
         } >&2
         if ~{allow_mixed_platforms}; then
-          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
-          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
+          echo "WARNING: proceeding because allow_mixed_platforms=true; results for the" >&2
+          echo "         ${normal_platform} sample are not trustworthy." >&2
         else
           {
-            echo "REFUSING TO LAUNCH. Options:"
-            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
-            echo "  - use samples sequenced on one platform"
-            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
+            echo "REFUSING TO LAUNCH. Use a tumour/normal pair from one platform, or set"
+            echo "allow_mixed_platforms=true for a deliberate experiment."
           } >&2
           exit 1
         fi
@@ -506,7 +521,21 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
         exit 1
       fi
+
+      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
+      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
+      # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
+      # be switched off from configuration. Disabling it would need a source patch and would
+      # save only about 2 minutes, so removing the outputs is the better trade.
+      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
+      # verified against a real archive that nothing else matches it.
+      exclude_args=()
+      if ! ~{include_germline_outputs}; then
+        exclude_args=(--exclude='*germline*')
+      fi
+
       tar -czf ~{outdir}.wgts.tar.gz \
+          "${exclude_args[@]}" \
           -C "${abs_outdir}/~{group_id}" \
           "${tar_dirs[@]}"
 
@@ -518,43 +547,8 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       WORKDIR=$(pwd)
 
-      # Optional inputs render as the empty string when absent, so capture them in shell
-      # variables and branch on those rather than testing the interpolation directly.
-      normal_bam="~{normal_bam}"
-      normal_bai="~{normal_bai}"
-      normal_sample_id="~{normal_sample_id}"
-      normal_platform="~{normal_platform}"
-
-      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
-      # samples below. Refuse rather than silently apply the wrong error model to one of them.
-      if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
-        {
-          echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
-          echo "  this run uses --sequencing_platform ~{sequencing_platform}"
-          echo "  but the normal sample is ${normal_platform}"
-          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
-          echo "would be analysed with the wrong error model."
-        } >&2
-        if ~{allow_mixed_platforms}; then
-          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
-          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
-        else
-          {
-            echo "REFUSING TO LAUNCH. Options:"
-            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
-            echo "  - use samples sequenced on one platform"
-            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
-          } >&2
-          exit 1
-        fi
-      fi
-
       ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
       ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
-      if [ -n "${normal_bam}" ]; then
-        ln -s "${normal_bam}" "${WORKDIR}/${normal_sample_id}.bam"
-        ln -s "${normal_bai}" "${WORKDIR}/${normal_sample_id}.bam.bai"
-      fi
 
       if ~{run_redux}; then
         filetype="bam"
@@ -571,23 +565,25 @@ This section lists command(s) run by purityEstimateV3 workflow
         long_info="longitudinal_sample;${redux_info}"
       fi
 
-      # AMBER only earns its keep when a primary normal is available for LOH, and
-      # oncoanalyser errors on an amber_dir input without one.
-      if [ -n "${normal_bam}" ]; then
-        processes="redux,amber,cobalt,sage_append,wisp"
-      else
-        processes="redux,cobalt,sage_append,wisp"
-      fi
+      # No AMBER: it is only of use for the LOH contribution, which cannot currently be
+      # obtained (see the samplesheet comment below), and running it costs a second REDUX for
+      # the normal plus AMBER itself for nothing.
+      processes="redux,cobalt,sage_append,wisp"
 
+      # The primary normal is deliberately NOT part of this run. It would only serve WISP's
+      # AMBER_LOH method, and that method cannot engage as things stand: wisp_analysis derives
+      # primary_normal_aln from REDUX_DIR_NORMAL, so the normal has to be supplied as a
+      # redux_dir, not as an alignment. Supplying it as a BAM passes samplesheet validation
+      # (Utils.groovy accepts hasNormalDnaBam OR hasNormalDnaReduxInput) and then silently
+      # yields no LOH -- while costing a second REDUX for the normal plus AMBER. The SNV
+      # result is unaffected either way, because SAGE_APPEND is given only the longitudinal
+      # REDUX output. See devlog for what enabling LOH would require.
+      #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
         echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{wgts_outdir}/purple/"
-        if [ -n "${normal_bam}" ]; then
-          echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,amber_dir,,~{wgts_outdir}/amber/"
-          echo "~{group_id},~{subject_id},${normal_sample_id},normal,dna,${filetype},${redux_info},${WORKDIR}/${normal_sample_id}.bam"
-        fi
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 

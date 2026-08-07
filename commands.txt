@@ -45,7 +45,15 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       # Advisory only: these combinations run, but not the way people usually expect.
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
-        echo "note: no normal_alignments, so WGTS runs tumour-only and purity estimation has no LOH input" >&2
+        echo "note: no normal_alignments, so the primary is called tumour-only" >&2
+      fi
+
+      if [ "${mode}" = "PE" ] && ~{if has_normal then "true" else "false"}; then
+        {
+          echo "note: normal_alignments is not used in PE mode. The PE run processes only the"
+          echo "      longitudinal sample, so the normal would be staged (CRAM conversion,"
+          echo "      fixmate, merge) at real cost and then discarded. Omit it."
+        } >&2
       fi
 
       echo "inputs OK for mode ${mode}"
@@ -221,25 +229,23 @@ This section lists command(s) run by purityEstimateV3 workflow
       normal_sample_id="~{normal_sample_id}"
       normal_platform="~{normal_platform}"
 
-      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
-      # samples below. Refuse rather than silently apply the wrong error model to one of them.
+      # This run processes the tumour AND the normal, but oncoanalyser applies ONE
+      # --sequencing_platform per run, so a tumour/normal pair split across platforms would
+      # get the wrong error model applied to one of them. There is no way to drop the normal
+      # from a tumour/normal analysis, so refuse unless explicitly overridden.
       if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
         {
           echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
           echo "  this run uses --sequencing_platform ~{sequencing_platform}"
           echo "  but the normal sample is ${normal_platform}"
-          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
-          echo "would be analysed with the wrong error model."
         } >&2
         if ~{allow_mixed_platforms}; then
-          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
-          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
+          echo "WARNING: proceeding because allow_mixed_platforms=true; results for the" >&2
+          echo "         ${normal_platform} sample are not trustworthy." >&2
         else
           {
-            echo "REFUSING TO LAUNCH. Options:"
-            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
-            echo "  - use samples sequenced on one platform"
-            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
+            echo "REFUSING TO LAUNCH. Use a tumour/normal pair from one platform, or set"
+            echo "allow_mixed_platforms=true for a deliberate experiment."
           } >&2
           exit 1
         fi
@@ -329,7 +335,21 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
         exit 1
       fi
+
+      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
+      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
+      # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
+      # be switched off from configuration. Disabling it would need a source patch and would
+      # save only about 2 minutes, so removing the outputs is the better trade.
+      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
+      # verified against a real archive that nothing else matches it.
+      exclude_args=()
+      if ! ~{include_germline_outputs}; then
+        exclude_args=(--exclude='*germline*')
+      fi
+
       tar -czf ~{outdir}.wgts.tar.gz \
+          "${exclude_args[@]}" \
           -C "${abs_outdir}/~{group_id}" \
           "${tar_dirs[@]}"
 
@@ -341,43 +361,8 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       WORKDIR=$(pwd)
 
-      # Optional inputs render as the empty string when absent, so capture them in shell
-      # variables and branch on those rather than testing the interpolation directly.
-      normal_bam="~{normal_bam}"
-      normal_bai="~{normal_bai}"
-      normal_sample_id="~{normal_sample_id}"
-      normal_platform="~{normal_platform}"
-
-      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
-      # samples below. Refuse rather than silently apply the wrong error model to one of them.
-      if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
-        {
-          echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
-          echo "  this run uses --sequencing_platform ~{sequencing_platform}"
-          echo "  but the normal sample is ${normal_platform}"
-          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
-          echo "would be analysed with the wrong error model."
-        } >&2
-        if ~{allow_mixed_platforms}; then
-          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
-          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
-        else
-          {
-            echo "REFUSING TO LAUNCH. Options:"
-            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
-            echo "  - use samples sequenced on one platform"
-            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
-          } >&2
-          exit 1
-        fi
-      fi
-
       ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
       ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
-      if [ -n "${normal_bam}" ]; then
-        ln -s "${normal_bam}" "${WORKDIR}/${normal_sample_id}.bam"
-        ln -s "${normal_bai}" "${WORKDIR}/${normal_sample_id}.bam.bai"
-      fi
 
       if ~{run_redux}; then
         filetype="bam"
@@ -394,23 +379,25 @@ This section lists command(s) run by purityEstimateV3 workflow
         long_info="longitudinal_sample;${redux_info}"
       fi
 
-      # AMBER only earns its keep when a primary normal is available for LOH, and
-      # oncoanalyser errors on an amber_dir input without one.
-      if [ -n "${normal_bam}" ]; then
-        processes="redux,amber,cobalt,sage_append,wisp"
-      else
-        processes="redux,cobalt,sage_append,wisp"
-      fi
+      # No AMBER: it is only of use for the LOH contribution, which cannot currently be
+      # obtained (see the samplesheet comment below), and running it costs a second REDUX for
+      # the normal plus AMBER itself for nothing.
+      processes="redux,cobalt,sage_append,wisp"
 
+      # The primary normal is deliberately NOT part of this run. It would only serve WISP's
+      # AMBER_LOH method, and that method cannot engage as things stand: wisp_analysis derives
+      # primary_normal_aln from REDUX_DIR_NORMAL, so the normal has to be supplied as a
+      # redux_dir, not as an alignment. Supplying it as a BAM passes samplesheet validation
+      # (Utils.groovy accepts hasNormalDnaBam OR hasNormalDnaReduxInput) and then silently
+      # yields no LOH -- while costing a second REDUX for the normal plus AMBER. The SNV
+      # result is unaffected either way, because SAGE_APPEND is given only the longitudinal
+      # REDUX output. See devlog for what enabling LOH would require.
+      #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
         echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{wgts_outdir}/purple/"
-        if [ -n "${normal_bam}" ]; then
-          echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,amber_dir,,~{wgts_outdir}/amber/"
-          echo "~{group_id},~{subject_id},${normal_sample_id},normal,dna,${filetype},${redux_info},${WORKDIR}/${normal_sample_id}.bam"
-        fi
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 

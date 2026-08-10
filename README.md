@@ -30,11 +30,23 @@ Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides
 
 | mode | tumor_alignments | normal_alignments | longitudinal_alignments | wgts_tarball |
 |---|---|---|---|---|
-| WG | required | optional | - | - |
+| WG | required | **required** | - | - |
 | PE | - | not used | required | required |
-| WG_PE | required | optional | required | - |
+| WG_PE | required | **required** | required | - |
 
-`normal_alignments` is used only by the WG step, for tumour/normal somatic calling. Do not supply it in PE mode: it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded.
+`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded.
+
+### A tumour-only primary gives a FALSE MRD-POSITIVE
+
+Without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.
+
+Measured on subject OCT_011303, one plasma sample against three primaries: NEGATIVE against the tumour/normal primary, and a spurious 0.2255 and 0.2451 against two tumour-only primaries. In the tumour-only runs 27% and 20% of PASS sites sit in the 0.45-0.55 VAF bin, the heterozygous germline peak, where a properly filtered somatic set has almost none; 3 to 6 times as many sites are called; and the plasma VAF observed is about 3 times what the fitted purity implies.
+
+WG and WG_PE therefore FAIL without `normal_alignments`, unconditionally. There is no override flag: a tumour-only primary has no legitimate use here, and an override would only create a route by which a wrong MRD call reaches a report.
+
+PE mode is not checked, and cannot be. A PE run receives the primary as already-called results in a tarball, and nothing in that tarball reliably records whether a matched normal was used: germline files would be the obvious marker but this workflow excludes them by default. SUPPLYING A TARBALL THAT CAME FROM A TUMOUR/NORMAL WG RUN IS THE CALLER'S RESPONSIBILITY. A tarball from a tumour-only primary will produce a confident, entirely wrong MRD-positive with no warning anywhere.
+
+Note that this is a different role for the normal than the one the PE step dropped. The WG step needs it as the GERMLINE REFERENCE for somatic calling, which is what makes it mandatory. The PE step would only have used it for WISP AMBER_LOH, which never engaged. Both remain true at once: the normal is required as an input, the WG step uses it, and the PE step still does not receive it.
 
 Leave `tumor_sample_id` unset. In WG modes it comes from the tumour @RG SM tag; in PE mode it is derived from the tarball's purple/ filenames, and a supplied value that disagrees is rejected. A wrong value otherwise fails deep inside SAGE_APPEND, after REDUX and COBALT have already run.
 
@@ -42,7 +54,7 @@ Leave `tumor_sample_id` unset. In WG modes it comes from the tumour @RG SM tag; 
 
 * Single platform with matched normal: WG_PE with tumour, normal and longitudinal samples. The normal gives a proper tumour/normal somatic call set for the primary, which is what the MRD assessment is built on.
 * Illumina primary with Ultima ctDNA: WG_PE with the Illumina tumour and normal plus the Ultima longitudinal sample works directly. The WG run uses illumina and the PE run uses ultima. Running WG and PE as two separate jobs is equivalent.
-* Tumour-only primary: supported, but the somatic call set will be less well filtered without a matched normal.
+* Tumour-only primary: NOT supported for MRD, and refused by default. See above.
 
 ## Dependencies
 
@@ -74,7 +86,7 @@ Parameter|Value|Description
 Parameter|Value|Default|Description
 ---|---|---|---
 `tumor_alignments`|Array[Alignment]?|None|Primary tumour BAM/CRAM(s) with indices; required for WG and WG_PE mode. Multiple entries (e.g. per flowcell) are merged
-`normal_alignments`|Array[Alignment]?|None|Matched normal BAM/CRAM(s) with indices; optional. Omitting it gives tumour-only WGTS, and LOH-free purity estimation
+`normal_alignments`|Array[Alignment]?|None|Matched normal BAM/CRAM(s) with indices. MANDATORY for WG and WG_PE, with no override: without it the primary is called tumour-only, germline variants are not subtracted from the somatic call set, and the MRD result is a false positive. Not used by the PE step, which does not pass the normal to WISP; supplying it in PE mode wastes staging effort
 `longitudinal_alignments`|Array[Alignment]?|None|ctDNA BAM/CRAM(s) with indices; required for PE and WG_PE mode. Multiple entries are merged
 `wgts_tarball`|File?|None|Tarball produced by a prior WG run (amber/, cobalt/, purple/, pave/, sage/); required for PE mode
 `tumor_sample_id`|String?|None|Primary tumour sample ID. Normally leave unset: in WG modes it is read from the tumour @RG SM tag, and in PE mode it is derived from the WG tarball's purple/ filenames. If given, it overrides the @RG SM tag in WG modes and is cross-checked against the tarball in PE mode
@@ -225,17 +237,26 @@ This section lists command(s) run by purityEstimateV3 workflow
         esac
       fi
 
+      # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
+      # matched normal SAGE cannot subtract germline variants, so the somatic call set is
+      # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
+      # homozygous frequencies, and WISP reports that as tumour fraction. Measured on subject
+      # OCT_011303: NEGATIVE against a T/N primary, a spurious 0.2255 and 0.2451 against two
+      # tumour-only primaries of the same subject, with 27% and 20% of PASS sites sitting in
+      # the 0.45-0.55 VAF bin (the het germline peak) where a somatic set has almost none.
+      # So this is an unconditional hard error. There is no override flag: a tumour-only
+      # primary has no legitimate use in this workflow, and an override would only create a
+      # route by which a wrong MRD call reaches a report.
+      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
+        errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
+      fi
+
       if [ "${#errors[@]}" -gt 0 ]; then
         echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
         for e in "${errors[@]}"; do
           echo "  - ${e}" >&2
         done
         exit 1
-      fi
-
-      # Advisory only: these combinations run, but not the way people usually expect.
-      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
-        echo "note: no normal_alignments, so the primary is called tumour-only" >&2
       fi
 
       if [ "${mode}" = "PE" ] && ~{if has_normal then "true" else "false"}; then

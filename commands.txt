@@ -35,17 +35,26 @@ This section lists command(s) run by purityEstimateV3 workflow
         esac
       fi
 
+      # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
+      # matched normal SAGE cannot subtract germline variants, so the somatic call set is
+      # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
+      # homozygous frequencies, and WISP reports that as tumour fraction. Measured on subject
+      # OCT_011303: NEGATIVE against a T/N primary, a spurious 0.2255 and 0.2451 against two
+      # tumour-only primaries of the same subject, with 27% and 20% of PASS sites sitting in
+      # the 0.45-0.55 VAF bin (the het germline peak) where a somatic set has almost none.
+      # So this is an unconditional hard error. There is no override flag: a tumour-only
+      # primary has no legitimate use in this workflow, and an override would only create a
+      # route by which a wrong MRD call reaches a report.
+      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
+        errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
+      fi
+
       if [ "${#errors[@]}" -gt 0 ]; then
         echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
         for e in "${errors[@]}"; do
           echo "  - ${e}" >&2
         done
         exit 1
-      fi
-
-      # Advisory only: these combinations run, but not the way people usually expect.
-      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
-        echo "note: no normal_alignments, so the primary is called tumour-only" >&2
       fi
 
       if [ "${mode}" = "PE" ] && ~{if has_normal then "true" else "false"}; then

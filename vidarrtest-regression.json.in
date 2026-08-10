@@ -48,36 +48,9 @@
             "purityEstimateV3.fixmate_tumor_disc.modules": null,
             "purityEstimateV3.fixmate_tumor_disc.threads": null,
             "purityEstimateV3.fixmate_tumor_disc.timeout": null,
-            "purityEstimateV3.group_id": "416788-OCT_011291_Ct_T_nn_1-11_LB01-01-Z0017",
+            "purityEstimateV3.group_id": "purityEstimateV3_test_01_WG",
             "purityEstimateV3.include_germline_outputs": null,
-            "purityEstimateV3.longitudinal_alignments": [
-                {
-                    "aln": {
-                        "contents": {
-                            "configuration": "/.mounts/labs/gsiprojects/gsi/mrd_ultima/ultima_cram/416788-OCT_011291_Ct_T_nn_1-11_LB01-01-Z0017-CACGTGGCACATGAT.cram",
-                            "externalIds": [
-                                {
-                                    "id": "TEST",
-                                    "provider": "TEST"
-                                }
-                            ]
-                        },
-                        "type": "EXTERNAL"
-                    },
-                    "idx": {
-                        "contents": {
-                            "configuration": "/.mounts/labs/gsiprojects/gsi/mrd_ultima/ultima_cram/416788-OCT_011291_Ct_T_nn_1-11_LB01-01-Z0017-CACGTGGCACATGAT.cram.crai",
-                            "externalIds": [
-                                {
-                                    "id": "TEST",
-                                    "provider": "TEST"
-                                }
-                            ]
-                        },
-                        "type": "EXTERNAL"
-                    }
-                }
-            ],
+            "purityEstimateV3.longitudinal_alignments": null,
             "purityEstimateV3.longitudinal_info.memory": null,
             "purityEstimateV3.longitudinal_info.modules": null,
             "purityEstimateV3.longitudinal_info.timeout": null,
@@ -105,62 +78,149 @@
             "purityEstimateV3.merge_tumor_plain.modules": null,
             "purityEstimateV3.merge_tumor_plain.threads": null,
             "purityEstimateV3.merge_tumor_plain.timeout": null,
-            "purityEstimateV3.mode": "PE",
+            "purityEstimateV3.mode": "WG",
             "purityEstimateV3.modules": null,
             "purityEstimateV3.nextflow_stub": null,
-            "purityEstimateV3.normal_alignments": null,
+            "purityEstimateV3.normal_alignments": [
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L1.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L1.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                },
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L2.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L2.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                }
+            ],
             "purityEstimateV3.normal_info.memory": null,
             "purityEstimateV3.normal_info.modules": null,
             "purityEstimateV3.normal_info.timeout": null,
-            "purityEstimateV3.outputFileNamePrefix": "purityEstimateV3_test_01",
+            "purityEstimateV3.outputFileNamePrefix": "purityEstimateV3_test_01_WG",
             "purityEstimateV3.resources_root": null,
             "purityEstimateV3.run_control": null,
             "purityEstimateV3.run_redux": true,
             "purityEstimateV3.run_wgts.memory": null,
             "purityEstimateV3.run_wgts.timeout": null,
             "purityEstimateV3.sequencing_platform": null,
-            "purityEstimateV3.subject_id": "416788-OCT_011291_Ct_T_nn_1-11_LB01-01-Z0017",
+            "purityEstimateV3.subject_id": "purityEstimateV3_test_01_WG",
             "purityEstimateV3.subject_purity.memory": null,
             "purityEstimateV3.subject_purity.timeout": null,
-            "purityEstimateV3.tumor_alignments": null,
+            "purityEstimateV3.tumor_alignments": [
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L1.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L1.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                },
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L2.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L2.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                }
+            ],
             "purityEstimateV3.tumor_info.memory": null,
             "purityEstimateV3.tumor_info.modules": null,
             "purityEstimateV3.tumor_info.timeout": null,
             "purityEstimateV3.tumor_sample_id": null,
             "purityEstimateV3.validate_inputs.memory": null,
             "purityEstimateV3.validate_inputs.timeout": null,
-            "purityEstimateV3.wgts_tarball": {
-                "contents": {
-                    "configuration": "/.mounts/labs/gsiprojects/gsi/mrd_ultima/illumina_TN/OCT_011291.tar.gz",
-                    "externalIds": [
-                        {
-                            "id": "TEST",
-                            "provider": "TEST"
-                        }
-                    ]
-                },
-                "type": "EXTERNAL"
-            }
+            "purityEstimateV3.wgts_tarball": null
         },
-        "description": "purityEstimateV3 PE mode, Illumina WG tarball with Ultima plasma CRAM, MRD-positive subject OCT_011291",
+        "description": "WG mode: chr22 Illumina tumour/normal, two lanes each. Covers merge_bams, the Illumina fixmate path, and the WG tarball.",
         "engineArguments": {
             "write_to_cache": false,
             "read_from_cache": false
         },
-        "id": "purityEstimateV3_test_01",
+        "id": "purityEstimateV3_test_01_WG",
         "metadata": {
-            "purityEstimateV3.wisp_tarballs": {
+            "purityEstimateV3.wg_tarball": {
                 "contents": [
                     {
-                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_@JENKINSID@"
-                    }
-                ],
-                "type": "ALL"
-            },
-            "purityEstimateV3.wisp_summary": {
-                "contents": [
-                    {
-                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_@JENKINSID@"
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
                     }
                 ],
                 "type": "ALL"
@@ -168,7 +228,7 @@
             "purityEstimateV3.pipeline_info": {
                 "contents": [
                     {
-                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_@JENKINSID@"
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
                     }
                 ],
                 "type": "ALL"
@@ -178,7 +238,7 @@
             {
                 "metrics_calculate": "@CHECKOUT@/tests/calculate.sh",
                 "metrics_compare": "@CHECKOUT@/tests/compare.sh",
-                "output_metrics": "/.mounts/labs/gsi/testdata/purityEstimateV3/output_metrics/workflow_test_01.metrics",
+                "output_metrics": "/.mounts/labs/gsi/testdata/purityEstimateV3/output_metrics/workflow_test_01_WG.metrics",
                 "type": "script"
             }
         ]
@@ -232,13 +292,13 @@
             "purityEstimateV3.fixmate_tumor_disc.modules": null,
             "purityEstimateV3.fixmate_tumor_disc.threads": null,
             "purityEstimateV3.fixmate_tumor_disc.timeout": null,
-            "purityEstimateV3.group_id": "416788-OCT_011303_Ct_T_nn_1-11_LB01-01-Z0020",
+            "purityEstimateV3.group_id": "purityEstimateV3_test_02_PE",
             "purityEstimateV3.include_germline_outputs": null,
             "purityEstimateV3.longitudinal_alignments": [
                 {
                     "aln": {
                         "contents": {
-                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/416788-OCT_011303_Ct_T_nn_1-11_LB01-01-Z0020.cram",
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/pe_plasma.cram",
                             "externalIds": [
                                 {
                                     "id": "TEST",
@@ -250,7 +310,7 @@
                     },
                     "idx": {
                         "contents": {
-                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/416788-OCT_011303_Ct_T_nn_1-11_LB01-01-Z0020.cram.crai",
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/pe_plasma.cram.crai",
                             "externalIds": [
                                 {
                                     "id": "TEST",
@@ -296,14 +356,14 @@
             "purityEstimateV3.normal_info.memory": null,
             "purityEstimateV3.normal_info.modules": null,
             "purityEstimateV3.normal_info.timeout": null,
-            "purityEstimateV3.outputFileNamePrefix": "purityEstimateV3_test_02",
+            "purityEstimateV3.outputFileNamePrefix": "purityEstimateV3_test_02_PE",
             "purityEstimateV3.resources_root": null,
             "purityEstimateV3.run_control": null,
             "purityEstimateV3.run_redux": true,
             "purityEstimateV3.run_wgts.memory": null,
             "purityEstimateV3.run_wgts.timeout": null,
             "purityEstimateV3.sequencing_platform": null,
-            "purityEstimateV3.subject_id": "416788-OCT_011303_Ct_T_nn_1-11_LB01-01-Z0020",
+            "purityEstimateV3.subject_id": "purityEstimateV3_test_02_PE",
             "purityEstimateV3.subject_purity.memory": null,
             "purityEstimateV3.subject_purity.timeout": null,
             "purityEstimateV3.tumor_alignments": null,
@@ -315,7 +375,7 @@
             "purityEstimateV3.validate_inputs.timeout": null,
             "purityEstimateV3.wgts_tarball": {
                 "contents": {
-                    "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/OCT_011303.tar.gz",
+                    "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/pe_wgts.tar.gz",
                     "externalIds": [
                         {
                             "id": "TEST",
@@ -326,17 +386,17 @@
                 "type": "EXTERNAL"
             }
         },
-        "description": "purityEstimateV3 PE mode, Illumina WG tarball with Ultima plasma CRAM, MRD-negative subject OCT_011303",
+        "description": "PE mode: the WG case's own tarball plus a chr22 Ultima plasma CRAM. Covers cram_to_bam, ultima platform detection, extract_wgts and WISP.",
         "engineArguments": {
             "write_to_cache": false,
             "read_from_cache": false
         },
-        "id": "purityEstimateV3_test_02",
+        "id": "purityEstimateV3_test_02_PE",
         "metadata": {
             "purityEstimateV3.wisp_tarballs": {
                 "contents": [
                     {
-                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_@JENKINSID@"
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
                     }
                 ],
                 "type": "ALL"
@@ -344,7 +404,7 @@
             "purityEstimateV3.wisp_summary": {
                 "contents": [
                     {
-                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_@JENKINSID@"
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
                     }
                 ],
                 "type": "ALL"
@@ -352,7 +412,7 @@
             "purityEstimateV3.pipeline_info": {
                 "contents": [
                     {
-                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_@JENKINSID@"
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
                     }
                 ],
                 "type": "ALL"
@@ -362,7 +422,294 @@
             {
                 "metrics_calculate": "@CHECKOUT@/tests/calculate.sh",
                 "metrics_compare": "@CHECKOUT@/tests/compare.sh",
-                "output_metrics": "/.mounts/labs/gsi/testdata/purityEstimateV3/output_metrics/workflow_test_02.metrics",
+                "output_metrics": "/.mounts/labs/gsi/testdata/purityEstimateV3/output_metrics/workflow_test_02_PE.metrics",
+                "type": "script"
+            }
+        ]
+    },
+    {
+        "arguments": {
+            "purityEstimateV3.allow_mixed_platforms": null,
+            "purityEstimateV3.collect_results.memory": null,
+            "purityEstimateV3.collect_results.timeout": null,
+            "purityEstimateV3.control_info.memory": null,
+            "purityEstimateV3.control_info.modules": null,
+            "purityEstimateV3.control_info.timeout": null,
+            "purityEstimateV3.control_purity.memory": null,
+            "purityEstimateV3.control_purity.timeout": null,
+            "purityEstimateV3.controls": null,
+            "purityEstimateV3.cram_longitudinal.memory": null,
+            "purityEstimateV3.cram_longitudinal.modules": null,
+            "purityEstimateV3.cram_longitudinal.threads": null,
+            "purityEstimateV3.cram_longitudinal.timeout": null,
+            "purityEstimateV3.cram_normal.memory": null,
+            "purityEstimateV3.cram_normal.modules": null,
+            "purityEstimateV3.cram_normal.threads": null,
+            "purityEstimateV3.cram_normal.timeout": null,
+            "purityEstimateV3.cram_tumor.memory": null,
+            "purityEstimateV3.cram_tumor.modules": null,
+            "purityEstimateV3.cram_tumor.threads": null,
+            "purityEstimateV3.cram_tumor.timeout": null,
+            "purityEstimateV3.extract_wgts.memory": null,
+            "purityEstimateV3.extract_wgts.timeout": null,
+            "purityEstimateV3.fixmate_longitudinal_chr.memory": null,
+            "purityEstimateV3.fixmate_longitudinal_chr.modules": null,
+            "purityEstimateV3.fixmate_longitudinal_chr.threads": null,
+            "purityEstimateV3.fixmate_longitudinal_chr.timeout": null,
+            "purityEstimateV3.fixmate_longitudinal_disc.memory": null,
+            "purityEstimateV3.fixmate_longitudinal_disc.modules": null,
+            "purityEstimateV3.fixmate_longitudinal_disc.threads": null,
+            "purityEstimateV3.fixmate_longitudinal_disc.timeout": null,
+            "purityEstimateV3.fixmate_normal_chr.memory": null,
+            "purityEstimateV3.fixmate_normal_chr.modules": null,
+            "purityEstimateV3.fixmate_normal_chr.threads": null,
+            "purityEstimateV3.fixmate_normal_chr.timeout": null,
+            "purityEstimateV3.fixmate_normal_disc.memory": null,
+            "purityEstimateV3.fixmate_normal_disc.modules": null,
+            "purityEstimateV3.fixmate_normal_disc.threads": null,
+            "purityEstimateV3.fixmate_normal_disc.timeout": null,
+            "purityEstimateV3.fixmate_tumor_chr.memory": null,
+            "purityEstimateV3.fixmate_tumor_chr.modules": null,
+            "purityEstimateV3.fixmate_tumor_chr.threads": null,
+            "purityEstimateV3.fixmate_tumor_chr.timeout": null,
+            "purityEstimateV3.fixmate_tumor_disc.memory": null,
+            "purityEstimateV3.fixmate_tumor_disc.modules": null,
+            "purityEstimateV3.fixmate_tumor_disc.threads": null,
+            "purityEstimateV3.fixmate_tumor_disc.timeout": null,
+            "purityEstimateV3.group_id": "purityEstimateV3_test_03_WG_PE",
+            "purityEstimateV3.include_germline_outputs": null,
+            "purityEstimateV3.longitudinal_alignments": [
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/pe_plasma.cram",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/pe_plasma.cram.crai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                }
+            ],
+            "purityEstimateV3.longitudinal_info.memory": null,
+            "purityEstimateV3.longitudinal_info.modules": null,
+            "purityEstimateV3.longitudinal_info.timeout": null,
+            "purityEstimateV3.merge_longitudinal_fixmate.memory": null,
+            "purityEstimateV3.merge_longitudinal_fixmate.modules": null,
+            "purityEstimateV3.merge_longitudinal_fixmate.threads": null,
+            "purityEstimateV3.merge_longitudinal_fixmate.timeout": null,
+            "purityEstimateV3.merge_longitudinal_plain.memory": null,
+            "purityEstimateV3.merge_longitudinal_plain.modules": null,
+            "purityEstimateV3.merge_longitudinal_plain.threads": null,
+            "purityEstimateV3.merge_longitudinal_plain.timeout": null,
+            "purityEstimateV3.merge_normal_fixmate.memory": null,
+            "purityEstimateV3.merge_normal_fixmate.modules": null,
+            "purityEstimateV3.merge_normal_fixmate.threads": null,
+            "purityEstimateV3.merge_normal_fixmate.timeout": null,
+            "purityEstimateV3.merge_normal_plain.memory": null,
+            "purityEstimateV3.merge_normal_plain.modules": null,
+            "purityEstimateV3.merge_normal_plain.threads": null,
+            "purityEstimateV3.merge_normal_plain.timeout": null,
+            "purityEstimateV3.merge_tumor_fixmate.memory": null,
+            "purityEstimateV3.merge_tumor_fixmate.modules": null,
+            "purityEstimateV3.merge_tumor_fixmate.threads": null,
+            "purityEstimateV3.merge_tumor_fixmate.timeout": null,
+            "purityEstimateV3.merge_tumor_plain.memory": null,
+            "purityEstimateV3.merge_tumor_plain.modules": null,
+            "purityEstimateV3.merge_tumor_plain.threads": null,
+            "purityEstimateV3.merge_tumor_plain.timeout": null,
+            "purityEstimateV3.mode": "WG_PE",
+            "purityEstimateV3.modules": null,
+            "purityEstimateV3.nextflow_stub": null,
+            "purityEstimateV3.normal_alignments": [
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L1.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L1.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                },
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L2.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_normal_L2.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                }
+            ],
+            "purityEstimateV3.normal_info.memory": null,
+            "purityEstimateV3.normal_info.modules": null,
+            "purityEstimateV3.normal_info.timeout": null,
+            "purityEstimateV3.outputFileNamePrefix": "purityEstimateV3_test_03_WG_PE",
+            "purityEstimateV3.resources_root": null,
+            "purityEstimateV3.run_control": null,
+            "purityEstimateV3.run_redux": true,
+            "purityEstimateV3.run_wgts.memory": null,
+            "purityEstimateV3.run_wgts.timeout": null,
+            "purityEstimateV3.sequencing_platform": null,
+            "purityEstimateV3.subject_id": "purityEstimateV3_test_03_WG_PE",
+            "purityEstimateV3.subject_purity.memory": null,
+            "purityEstimateV3.subject_purity.timeout": null,
+            "purityEstimateV3.tumor_alignments": [
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L1.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L1.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                },
+                {
+                    "aln": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L2.bam",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    },
+                    "idx": {
+                        "contents": {
+                            "configuration": "/.mounts/labs/gsi/testdata/purityEstimateV3/test_data/wg_tumor_L2.bam.bai",
+                            "externalIds": [
+                                {
+                                    "id": "TEST",
+                                    "provider": "TEST"
+                                }
+                            ]
+                        },
+                        "type": "EXTERNAL"
+                    }
+                }
+            ],
+            "purityEstimateV3.tumor_info.memory": null,
+            "purityEstimateV3.tumor_info.modules": null,
+            "purityEstimateV3.tumor_info.timeout": null,
+            "purityEstimateV3.tumor_sample_id": null,
+            "purityEstimateV3.validate_inputs.memory": null,
+            "purityEstimateV3.validate_inputs.timeout": null,
+            "purityEstimateV3.wgts_tarball": null
+        },
+        "description": "WG_PE mode: both stages in one run, Illumina primary with an Ultima plasma. Covers the on-disk handoff between stages, which no separate WG and PE pair can reach, and the cross-platform WG/PE split.",
+        "engineArguments": {
+            "write_to_cache": false,
+            "read_from_cache": false
+        },
+        "id": "purityEstimateV3_test_03_WG_PE",
+        "metadata": {
+            "purityEstimateV3.wg_tarball": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wisp_tarballs": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wisp_summary": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.pipeline_info": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            }
+        },
+        "validators": [
+            {
+                "metrics_calculate": "@CHECKOUT@/tests/calculate.sh",
+                "metrics_compare": "@CHECKOUT@/tests/compare.sh",
+                "output_metrics": "/.mounts/labs/gsi/testdata/purityEstimateV3/output_metrics/workflow_test_03_WG_PE.metrics",
                 "type": "script"
             }
         ]

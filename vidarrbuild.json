@@ -1,0 +1,6 @@
+{
+    "names": [
+        "purityEstimateV3"
+    ],
+    "wdl": "purityEstimateV3.wdl"
+}

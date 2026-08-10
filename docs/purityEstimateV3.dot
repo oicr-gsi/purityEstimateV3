@@ -1,0 +1,149 @@
+// purityEstimateV3 workflow diagram.
+//
+// Source of truth for docs/purityEstimateV3.svg, which README.md references. Regenerate:
+//     bash v3/render.sh            (SVG only)
+//     bash v3/render.sh --png      (also the PNG for a Confluence attachment)
+//
+// The SVG is committed; the PNG is gitignored and rendered on demand.
+//
+// The point of this diagram is the two things people get wrong when reading a run:
+//   1. which mode runs which stage
+//   2. where Cromwell stops and Nextflow starts (the two head-job boxes)
+// So WDL tasks are rounded boxes and Nextflow processes are ellipses. Only the
+// per-sample prep tasks are clustered; extract_wgts and collect_results are left loose
+// so graphviz can place them at the stage they actually belong to, which keeps the
+// whole graph flowing top to bottom instead of sprawling sideways.
+
+digraph purityEstimateV3 {
+    rankdir=TB;
+    compound=true;
+    newrank=true;
+    bgcolor="white";
+    node [fontname="Helvetica" fontsize=10 style="filled" color="#444444"];
+    edge [fontname="Helvetica" fontsize=9 color="#444444"];
+    graph [fontname="Helvetica" fontsize=11 labeljust=l];
+    nodesep=0.35; ranksep=0.5;
+
+    // WDL task style, used for both clustered and loose tasks.
+    node [shape=box style="filled,rounded" fillcolor="#eef4fb" color="#7ba7d7"];
+
+    // ---------------------------------------------------------------- inputs
+    subgraph cluster_inputs {
+        label="Inputs  (BAM or CRAM, one or more per sample)";
+        labeljust=c;
+        style="filled,rounded"; fillcolor="#f7f7f7"; color="#cccccc";
+        node [shape=note fillcolor="#ffffff" color="#888888"];
+        in_tumor  [label="tumor_alignments\nWG, WG_PE"];
+        in_normal [label="normal_alignments\noptional"];
+        in_long   [label="longitudinal_alignments\nPE, WG_PE"];
+        in_tar    [label="wgts_tarball\nPE"];
+    }
+
+    // ------------------------------------------- per-sample preparation (WDL)
+    subgraph cluster_prep {
+        label="Per-sample preparation  |  WDL tasks, one Cromwell job each";
+        style="filled,rounded"; fillcolor="#f4f8fd"; color="#7ba7d7";
+
+        validate [label="validate_inputs\nfail fast on a mode/input mismatch"];
+        info     [label="get_alignment_info\nsample ID + platform from @RG"];
+        cram     [label="cram_to_bam\nsamtools view -T hs38DH"];
+        fixmate  [label="fixmate_chr + fixmate_discordant\nILLUMINA ONLY\n(passed straight through for ultima / sbx:\nsingle-end reads have no mates to fix)"];
+        merge    [label="merge_bams\nlanes / flowcells"];
+
+        // The single-end skip is stated in the fixmate node label rather than as an
+        // extra cram -> merge edge: that edge's label landed on top of the fixmate node.
+        validate -> info;
+        info -> cram    [label="  if CRAM"];
+        info -> fixmate [label="  if BAM" style=dashed];
+        cram -> fixmate;
+        fixmate -> merge;
+    }
+
+    // ------------------------------------------------------- WG head job
+    subgraph cluster_wg {
+        label="run_wgts  |  ONE Cromwell task running `nextflow run --mode wgts`\l--processes_manual redux,amber,cobalt,sage,pave,purple\l";
+        style="filled,rounded"; fillcolor="#fdf3e7"; color="#e0a35c";
+        node [shape=ellipse style=filled fillcolor="#ffffff" color="#c98a45"];
+        wg_redux  [label="REDUX\ntumour + normal"];
+        wg_sage   [label="SAGE\nsomatic SNV/MNV/indel"];
+        wg_pave   [label="PAVE\nannotation"];
+        wg_amber  [label="AMBER\nBAF"];
+        wg_cobalt [label="COBALT\nread depth ratios"];
+        wg_purple [label="PURPLE\npurity, ploidy, copy number\n+ annotates the somatic VCF"];
+
+        wg_redux -> wg_sage;
+        wg_redux -> wg_amber;
+        wg_redux -> wg_cobalt;
+        wg_sage  -> wg_pave;
+        wg_pave   -> wg_purple;
+        wg_amber  -> wg_purple;
+        wg_cobalt -> wg_purple;
+        { rank=same; wg_sage; wg_amber; wg_cobalt; }
+    }
+
+    // ------------------------------------------------------- PE head job
+    subgraph cluster_pe {
+        label="run_purity_estimate  |  ONE Cromwell task per sample, `nextflow run --mode purity_estimate`\l--processes_manual redux,cobalt,sage_append,wisp        NO AMBER, NO NORMAL\l";
+        style="filled,rounded"; fillcolor="#eef7ee"; color="#7fb07f";
+        node [shape=ellipse style=filled fillcolor="#ffffff" color="#5f9a5f"];
+        pe_redux  [label="REDUX\nplasma\nBQR + MSI jitter models"];
+        pe_sage   [label="SAGE append\nsites from the primary's\npurple.somatic.vcf.gz"];
+        pe_cobalt [label="COBALT\ntumour-only,\n-tumor_only_diploid_bed"];
+        pe_wisp   [label="WISP\ntumour fraction, SNV_MRD"];
+
+        pe_redux -> pe_sage;
+        pe_redux -> pe_cobalt;
+        pe_sage -> pe_wisp;
+        pe_cobalt -> pe_wisp;
+        { rank=same; pe_sage; pe_cobalt; }
+    }
+
+    // ------------------------------------------------- loose WDL tasks
+    extract [label="extract_wgts\nunpack the tarball,\nderive the primary sample ID"];
+    collect [label="collect_results\ncombine subject + controls"];
+
+    // ---------------------------------------------------------------- outputs
+    subgraph cluster_out {
+        label="Outputs  (provisioned by Vidarr)";
+        labeljust=c;
+        style="filled,rounded"; fillcolor="#f7f7f7"; color="#cccccc";
+        node [shape=note fillcolor="#ffffff" color="#888888"];
+        out_tar  [label="wg_tarball\namber/ cobalt/ purple/ pave/ sage/\nno alignments/, no germline"];
+        out_sum  [label="wisp_summary\nSNV_MRD per sample"];
+        out_wisp [label="wisp_tarballs\nsubject + controls"];
+        out_info [label="pipeline_info\nreport, trace, versions"];
+    }
+
+    // ------------------------------------------------------------------ wiring
+    in_tumor  -> validate [style=dashed];
+    in_normal -> validate [style=dashed];
+    in_long   -> validate [style=dashed];
+    in_tar    -> extract  [label="  PE" constraint=false];
+
+    merge -> wg_redux [lhead=cluster_wg label="  WG, WG_PE\l  tumour + normal\l"];
+    merge -> pe_redux [lhead=cluster_pe label="  PE, WG_PE\l  plasma\l"];
+
+    wg_purple -> out_tar [ltail=cluster_wg];
+    extract   -> pe_sage [lhead=cluster_pe label="  purple_dir"];
+    wg_purple -> pe_sage [ltail=cluster_wg lhead=cluster_pe style=bold
+                          label="  WG_PE: straight off disk,\l  no tarball round trip\l"];
+
+    pe_wisp -> collect  [ltail=cluster_pe];
+    pe_wisp -> out_info [ltail=cluster_pe style=dashed];
+    collect -> out_sum;
+    collect -> out_wisp;
+
+    // ------------------------------------------------------------------ legend
+    subgraph cluster_legend {
+        label="Legend";
+        labeljust=c;
+        style="filled,rounded"; fillcolor="#ffffff"; color="#cccccc";
+        l_wdl  [shape=box style="filled,rounded" fillcolor="#eef4fb" color="#7ba7d7"
+                label="WDL task\none Cromwell / SGE job"];
+        l_nf   [shape=ellipse style=filled fillcolor="#ffffff" color="#888888"
+                label="Nextflow process\nsubmitted by a head job"];
+        l_file [shape=note style=filled fillcolor="#ffffff" color="#888888"
+                label="file in / out"];
+        l_wdl -> l_nf -> l_file [style=invis];
+    }
+}

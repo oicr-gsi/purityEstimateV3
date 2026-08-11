@@ -10,7 +10,10 @@ set -euo pipefail
 cd "$1" || exit 1
 
 echo "### provisioned files"
-find . -maxdepth 1 -type f -printf '%f\n' | sort
+# `! -type d`, NOT `-type f`: Vidarr provisions outputs as SYMLINKS, so -type f matches
+# nothing and this section silently records an empty list, which would then never detect a
+# missing output. Verified against a real run.
+find . -maxdepth 1 ! -type d -printf '%f\n' | sort
 
 echo "### archive members"
 for archive in *.tar.gz; do

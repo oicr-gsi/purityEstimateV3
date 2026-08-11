@@ -13,11 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tarball) and `WG_PE` (both, in sequence).
 - `normal_alignments` is MANDATORY for WG and WG_PE, with no override. A tumour-only
   primary does not merely degrade the MRD result, it inverts it: with no matched normal
-  SAGE cannot subtract germline variants, the primary somatic call set fills with germline
-  sites, and WISP measures those in the patient's own cfDNA at heterozygous frequency and
-  reports a large spurious tumour fraction. Measured on subject OCT_011303, one plasma
-  against three primaries: NEGATIVE against the tumour/normal primary, 0.2255 and 0.2451
-  against two tumour-only primaries.
+  SAGE cannot subtract germline variants, the somatic call set fills with germline sites,
+  and WISP measures those in the patient's own cfDNA and reports a large spurious tumour
+  fraction. Measured, and confirmed by re-running the same primaries with their normals.
 - Accepts BAM or CRAM for every sample. CRAMs are decoded against hs38DH, the reference
   the Ultima vendor encodes with; multiple alignments per sample are merged.
 - Per-sample sequencing platform detection from the `@RG PL` tag, overridable with

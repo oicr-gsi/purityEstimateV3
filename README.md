@@ -40,9 +40,9 @@ Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides
 
 Without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.
 
-Measured on subject OCT_011303, one plasma sample against three primaries: NEGATIVE against the tumour/normal primary, and a spurious 0.2255 and 0.2451 against two tumour-only primaries. In the tumour-only runs 27% and 20% of PASS sites sit in the 0.45-0.55 VAF bin, the heterozygous germline peak, where a properly filtered somatic set has almost none; 3 to 6 times as many sites are called; and the plasma VAF observed is about 3 times what the fitted purity implies.
+This has been measured, and confirmed by re-running the same primaries with their normals; see the GSI wiki page for the numbers.
 
-WG and WG_PE therefore FAIL without `normal_alignments`, unconditionally. There is no override flag: a tumour-only primary has no legitimate use here, and an override would only create a route by which a wrong MRD call reaches a report.
+WG and WG_PE therefore FAIL without `normal_alignments`, unconditionally, and there is no override flag.
 
 PE mode is not checked, and cannot be. A PE run receives the primary as already-called results in a tarball, and nothing in that tarball reliably records whether a matched normal was used: germline files would be the obvious marker but this workflow excludes them by default. SUPPLYING A TARBALL THAT CAME FROM A TUMOUR/NORMAL WG RUN IS THE CALLER'S RESPONSIBILITY. A tarball from a tumour-only primary will produce a confident, entirely wrong MRD-positive with no warning anywhere.
 
@@ -240,13 +240,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
       # matched normal SAGE cannot subtract germline variants, so the somatic call set is
       # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
-      # homozygous frequencies, and WISP reports that as tumour fraction. Measured on subject
-      # OCT_011303: NEGATIVE against a T/N primary, a spurious 0.2255 and 0.2451 against two
-      # tumour-only primaries of the same subject, with 27% and 20% of PASS sites sitting in
-      # the 0.45-0.55 VAF bin (the het germline peak) where a somatic set has almost none.
-      # So this is an unconditional hard error. There is no override flag: a tumour-only
-      # primary has no legitimate use in this workflow, and an override would only create a
-      # route by which a wrong MRD call reaches a report.
+      # homozygous frequencies, and WISP reports that as tumour fraction. Measured, and
+      # confirmed by re-running the same primaries with their normals. Unconditional hard
+      # error, no override: a tumour-only primary has no legitimate use here.
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
@@ -609,7 +605,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       # (Utils.groovy accepts hasNormalDnaBam OR hasNormalDnaReduxInput) and then silently
       # yields no LOH -- while costing a second REDUX for the normal plus AMBER. The SNV
       # result is unaffected either way, because SAGE_APPEND is given only the longitudinal
-      # REDUX output. See devlog for what enabling LOH would require.
+      # REDUX output.
       #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.

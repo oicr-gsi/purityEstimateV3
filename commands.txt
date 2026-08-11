@@ -38,13 +38,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
       # matched normal SAGE cannot subtract germline variants, so the somatic call set is
       # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
-      # homozygous frequencies, and WISP reports that as tumour fraction. Measured on subject
-      # OCT_011303: NEGATIVE against a T/N primary, a spurious 0.2255 and 0.2451 against two
-      # tumour-only primaries of the same subject, with 27% and 20% of PASS sites sitting in
-      # the 0.45-0.55 VAF bin (the het germline peak) where a somatic set has almost none.
-      # So this is an unconditional hard error. There is no override flag: a tumour-only
-      # primary has no legitimate use in this workflow, and an override would only create a
-      # route by which a wrong MRD call reaches a report.
+      # homozygous frequencies, and WISP reports that as tumour fraction. Measured, and
+      # confirmed by re-running the same primaries with their normals. Unconditional hard
+      # error, no override: a tumour-only primary has no legitimate use here.
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
@@ -407,7 +403,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       # (Utils.groovy accepts hasNormalDnaBam OR hasNormalDnaReduxInput) and then silently
       # yields no LOH -- while costing a second REDUX for the normal plus AMBER. The SNV
       # result is unaffected either way, because SAGE_APPEND is given only the longitudinal
-      # REDUX output. See devlog for what enabling LOH would require.
+      # REDUX output.
       #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.

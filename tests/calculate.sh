@@ -26,7 +26,13 @@ for archive in *.tar.gz; do
     [ -e "$archive" ] || continue
     echo "-- $archive"
     # Sort: tar member order follows directory order and is not stable across runs.
-    tar -tzf "$archive" | sed 's|/$||' | sort
+    # Normalise Nextflow's timestamped pipeline_info filenames
+    # (execution_report_2026-08-11_11-02-39.html), which otherwise differ on EVERY run and
+    # make this section diff unconditionally.
+    tar -tzf "$archive" \
+        | sed 's|/$||' \
+        | sed -E 's/_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}/_TIMESTAMP/g' \
+        | sort
 done
 
 echo "### wisp summary columns"

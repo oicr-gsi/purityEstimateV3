@@ -225,6 +225,22 @@
                 ],
                 "type": "ALL"
             },
+            "purityEstimateV3.wisp_tarballs": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wisp_summary": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
             "purityEstimateV3.pipeline_info": {
                 "contents": [
                     {
@@ -393,6 +409,14 @@
         },
         "id": "purityEstimateV3_test_02_PE",
         "metadata": {
+            "purityEstimateV3.wg_tarball": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
             "purityEstimateV3.wisp_tarballs": {
                 "contents": [
                     {

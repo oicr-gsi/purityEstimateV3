@@ -7,6 +7,12 @@ set -euo pipefail
 # output, which has already caught real differences -- an MRD-negative sample makes
 # WISP omit somatic_vaf.png, so its tarball holds 7 files where a positive holds 8.
 
+# Bytewise collation, so the baseline does not depend on the runner's locale. The first
+# baselines happened to be produced under C already (amber/OCT_... sorts before
+# amber/amber.version, which only holds bytewise), so this pins existing behaviour rather
+# than changing it.
+export LC_ALL=C
+
 cd "$1" || exit 1
 
 echo "### provisioned files"

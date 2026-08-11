@@ -1119,6 +1119,12 @@ task run_wgts {
       chmod +x "${bin_dir}/qsub"
       export PATH="${bin_dir}:$PATH"
 
+      # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
+      # display rewrites lines and truncates process names to a nominal width, e.g.
+      # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
+      # mode prints one untruncated line per process event. NOTE the comment has to sit HERE,
+      # above the invocation: a # inside the backslash continuation would comment out the
+      # rest of the command, and womtool cannot catch that because it does not parse bash.
       ~{nextflow_bin} run ~{pipeline_dir}/main.nf \
           --mode wgts \
           --sequencing_platform ~{sequencing_platform} \
@@ -1132,6 +1138,7 @@ task run_wgts {
           -profile singularity \
           -c ~{oicr_config} \
           "${stub_args[@]}" \
+          -ansi-log false \
           -resume
 
       echo "${abs_outdir}/~{group_id}" > output_dir.txt
@@ -1304,6 +1311,12 @@ task run_purity_estimate {
       chmod +x "${bin_dir}/qsub"
       export PATH="${bin_dir}:$PATH"
 
+      # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
+      # display rewrites lines and truncates process names to a nominal width, e.g.
+      # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
+      # mode prints one untruncated line per process event. NOTE the comment has to sit HERE,
+      # above the invocation: a # inside the backslash continuation would comment out the
+      # rest of the command, and womtool cannot catch that because it does not parse bash.
       ~{nextflow_bin} run ~{pipeline_dir}/main.nf \
           --mode purity_estimate \
           --purity_estimate_mode wgts \
@@ -1318,6 +1331,7 @@ task run_purity_estimate {
           -profile singularity \
           -c ~{oicr_config} \
           "${stub_args[@]}" \
+          -ansi-log false \
           -resume
 
       abs_outdir=$(readlink -f ~{outdir})

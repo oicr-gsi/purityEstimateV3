@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SAGE cannot subtract germline variants, the somatic call set fills with germline sites,
   and WISP measures those in the patient's own cfDNA and reports a large spurious tumour
   fraction. Measured, and confirmed by re-running the same primaries with their normals.
+- Resource paths come from the `oncoanalyser/3.0.0-rc.3` environment module rather than a
+  hardcoded root: `$IMAGES_DIR`, `$ONCOANALYSER_FOLDER`, `$NEXTFLOW_HOME`, `$QSUB_WRAPPER`,
+  `$ONCOANALYSER_OICR_CONFIG`, and `nextflow` from PATH (the module ships 25.10.4). Reference
+  data comes from the separate `oncoanalyser-data/3.0.0` module via `$ONCOANALYSER_DATA_ROOT`.
+  The `resources_root` input is gone and no absolute paths remain in the workflow.
 - Accepts BAM or CRAM for every sample. CRAMs are decoded against hs38DH, the reference
   the Ultima vendor encodes with; multiple alignments per sample are merged.
 - Per-sample sequencing platform detection from the `@RG PL` tag, overridable with

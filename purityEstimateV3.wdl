@@ -57,8 +57,7 @@ workflow purityEstimateV3 {
         Boolean       include_germline_outputs = false  # see parameter_meta
         Boolean       allow_mixed_platforms = false  # production guardrail; see parameter_meta
         Boolean       nextflow_stub = false   # run oncoanalyser with -stub; see parameter_meta
-        String        resources_root = "/.mounts/labs/gsi/src/hmftools"
-        String        modules = "java/17 singularity/3.9.4 samtools/1.16.1"
+        String        modules = "java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"
     }
 
     parameter_meta {
@@ -78,20 +77,35 @@ workflow purityEstimateV3 {
         include_germline_outputs: "Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work, which would save only about 2 minutes"
         allow_mixed_platforms:  "Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning"
         nextflow_stub:          "When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run"
-        resources_root:         "Root of the staged oncoanalyser 3.x resources. Every resource path below is derived from it, so a future oncoanalyser/3.x module needs only these defaults changed"
-        modules:                "Environment modules to load. Deliberately excludes the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow (25.04.3) is too old for this pipeline"
+        modules:                "Environment modules to load. oncoanalyser/3.0.0-rc.3 supplies the pipeline checkout, the Singularity image cache, NXF_HOME, the qsub shim, the OICR overlay config and the Nextflow launcher on PATH; oncoanalyser-data supplies the HMF reference bundle and hs38DH. The paths below read variables exported by both. Do NOT substitute the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow is too old for this pipeline"
     }
 
-    # Staged resources, all under resources_root. String (not File) so Cromwell reads them
-    # from the shared filesystem instead of localizing gigabytes per task.
-    String ref_data_dir   = resources_root + "/ref_data_3.0.0"
-    String images_dir     = resources_root + "/oncoanalyser3_images"
-    String pipeline_dir   = resources_root + "/oncoanalyser_3.0.0-rc.3"
-    String nextflow_bin   = resources_root + "/nextflow_25.10.4/nextflow"
-    String nextflow_home  = resources_root + "/nextflow_home_3.0.0"
-    String oicr_config    = resources_root + "/oncoanalyser_oicr.config"
-    String qsub_wrapper   = resources_root + "/qsub_wrapper.sh"
-    String cram_reference = resources_root + "/hs38DH/GRCh38_full_analysis_set_plus_decoy_hla.fa"
+    # Resource paths. String (not File) so Cromwell reads them off the shared filesystem
+    # instead of localizing gigabytes per task.
+    #
+    # The first five are the LITERAL TEXT of variables exported by the oncoanalyser module,
+    # not their values: a workflow-level declaration is evaluated before any task runs, so
+    # the variable cannot be expanded here. They are interpolated into the command blocks and
+    # the shell expands them there, after `modules` has been loaded. Under `set -euo pipefail`
+    # an unset one fails the task loudly, which is the behaviour we want.
+    String images_dir     = "$IMAGES_DIR"
+    String pipeline_dir   = "$ONCOANALYSER_FOLDER"
+    String nextflow_home  = "$NEXTFLOW_HOME"
+    String oicr_config    = "$ONCOANALYSER_OICR_CONFIG"
+    String qsub_wrapper   = "$QSUB_WRAPPER"
+
+    # Nextflow comes from PATH: the module ships $ONCOANALYSER_ROOT/bin/nextflow, verified as
+    # 25.10.4, which satisfies the pipeline's real floor of 25.10.0 (nf-schema 2.7.2 needs it,
+    # even though the pipeline manifest still declares 25.04.0).
+    String nextflow_bin   = "nextflow"
+
+    # Reference data comes from the SEPARATE oncoanalyser-data module, which is versioned on
+    # its own cycle. Use the variables it exports rather than deriving paths from its root, so
+    # a re-layout inside the module does not break us. cram_to_bam needs the CRAM reference but
+    # not the pipeline, so it loads only the data module (see its `modules` default) -- a data
+    # module sets variables and adds no libraries, so it is cheap and safe to load anywhere.
+    String ref_data_dir   = "$REFERENCE_FILES_DIR"
+    String cram_reference = "$VENDOR_GENOME_HS38DH"
 
     # GRCh38 chromosomes processed individually to keep fixmate memory small.
     Array[String] chromosomes = [
@@ -633,7 +647,7 @@ task cram_to_bam {
         File   aln
         File   idx
         String cram_reference
-        String modules = "samtools/1.16.1"
+        String modules = "samtools/1.16.1 oncoanalyser-data/3.0.0"
         Int threads = 8
         Int memory  = 16
         Int timeout = 24
@@ -642,8 +656,8 @@ task cram_to_bam {
     parameter_meta {
         aln:            "Input CRAM file"
         idx:            "CRAM index (.crai) for aln"
-        cram_reference: "Path to the FASTA the CRAM was encoded against, e.g. hs38DH for Ultima vendor CRAMs. A String so it is read from shared storage without localization"
-        modules:        "Environment modules to load (samtools required)"
+        cram_reference: "Path to the FASTA the CRAM was encoded against, hs38DH for Ultima vendor CRAMs. Normally the literal $VENDOR_GENOME_HS38DH, expanded by the shell after the data module loads. A String so it is read from shared storage without localization"
+        modules:        "Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference"
         threads:        "Number of samtools threads"
         memory:         "Memory in GB"
         timeout:        "Wall-clock timeout in hours"
@@ -1019,10 +1033,10 @@ task run_wgts {
         nextflow_stub:       "Run oncoanalyser with -stub --create_stub_placeholders: placeholder outputs, no real compute"
         sequencing_platform: "Value for --sequencing_platform: illumina, sbx or ultima"
         outdir:              "Output directory; the pipeline writes to outdir/group_id/"
-        ref_data_dir:        "Staged HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path"
-        images_dir:          "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR)"
-        pipeline_dir:        "oncoanalyser checkout containing main.nf"
-        nextflow_bin:        "Path to the Nextflow executable; must be 25.10.0 or newer for this pipeline"
+        ref_data_dir:        "HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
+        images_dir:          "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR); normally the literal $IMAGES_DIR, expanded by the shell after the oncoanalyser module loads"
+        pipeline_dir:        "oncoanalyser checkout containing main.nf; normally the literal $ONCOANALYSER_FOLDER"
+        nextflow_bin:        "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
         nextflow_home:       "NXF_HOME holding the pre-cached nf-schema plugin, so the run works with NXF_OFFLINE=true"
         oicr_config:         "OICR overlay config passed with -c (SGE settings, container overrides, unused reference paths nulled out)"
         qsub_wrapper:        "qsub shim copied onto PATH; strips h_rss/mem_free from Nextflow's generated .command.run so SGE's cgroup does not kill JVM tasks"
@@ -1106,6 +1120,15 @@ task run_wgts {
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       export NXF_HOME=~{nextflow_home}
+
+      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
+      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
+      # nothing about the cause. Check it here instead.
+      [ -d "${NXF_HOME}/plugins" ] || {
+        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
+        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+        exit 1
+      }
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
@@ -1231,10 +1254,10 @@ task run_purity_estimate {
         sequencing_platform:    "Value for --sequencing_platform: illumina, sbx or ultima. Taken from the longitudinal sample, the only sample this run processes"
         wgts_outdir:            "Path to the WG output directory; its purple/ subdirectory supplies the primary variant list"
         outdir:                 "Output directory; the pipeline writes to outdir/group_id/"
-        ref_data_dir:           "Staged HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path"
-        images_dir:             "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR)"
-        pipeline_dir:           "oncoanalyser checkout containing main.nf"
-        nextflow_bin:           "Path to the Nextflow executable; must be 25.10.0 or newer for this pipeline"
+        ref_data_dir:           "HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
+        images_dir:             "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR); normally the literal $IMAGES_DIR, expanded by the shell after the oncoanalyser module loads"
+        pipeline_dir:           "oncoanalyser checkout containing main.nf; normally the literal $ONCOANALYSER_FOLDER"
+        nextflow_bin:           "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
         nextflow_home:          "NXF_HOME holding the pre-cached nf-schema plugin, so the run works with NXF_OFFLINE=true"
         oicr_config:            "OICR overlay config passed with -c (SGE settings, container overrides, unused reference paths nulled out)"
         qsub_wrapper:           "qsub shim copied onto PATH; strips h_rss/mem_free from Nextflow's generated .command.run so SGE's cgroup does not kill JVM tasks"
@@ -1299,6 +1322,15 @@ task run_purity_estimate {
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       export NXF_HOME=~{nextflow_home}
+
+      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
+      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
+      # nothing about the cause. Check it here instead.
+      [ -d "${NXF_HOME}/plugins" ] || {
+        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
+        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+        exit 1
+      }
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
       bin_dir="$(pwd)/bin"

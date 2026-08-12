@@ -97,8 +97,7 @@ Parameter|Value|Default|Description
 `include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work, which would save only about 2 minutes
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
-`resources_root`|String|"/.mounts/labs/gsi/src/hmftools"|Root of the staged oncoanalyser 3.x resources. Every resource path below is derived from it, so a future oncoanalyser/3.x module needs only these defaults changed
-`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1"|Environment modules to load. Deliberately excludes the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow (25.04.3) is too old for this pipeline
+`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. oncoanalyser/3.0.0-rc.3 supplies the pipeline checkout, the Singularity image cache, NXF_HOME, the qsub shim, the OICR overlay config and the Nextflow launcher on PATH; oncoanalyser-data supplies the HMF reference bundle and hs38DH. The paths below read variables exported by both. Do NOT substitute the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow is too old for this pipeline
 
 
 #### Optional task parameters:
@@ -115,7 +114,7 @@ Parameter|Value|Default|Description
 `longitudinal_info.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `longitudinal_info.memory`|Int|4|Memory in GB
 `longitudinal_info.timeout`|Int|1|Wall-clock timeout in hours
-`cram_tumor.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`cram_tumor.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_tumor.threads`|Int|8|Number of samtools threads
 `cram_tumor.memory`|Int|16|Memory in GB
 `cram_tumor.timeout`|Int|24|Wall-clock timeout in hours
@@ -135,7 +134,7 @@ Parameter|Value|Default|Description
 `merge_tumor_plain.threads`|Int|8|Number of samtools threads
 `merge_tumor_plain.memory`|Int|16|Memory in GB
 `merge_tumor_plain.timeout`|Int|24|Wall-clock timeout in hours
-`cram_normal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`cram_normal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_normal.threads`|Int|8|Number of samtools threads
 `cram_normal.memory`|Int|16|Memory in GB
 `cram_normal.timeout`|Int|24|Wall-clock timeout in hours
@@ -155,7 +154,7 @@ Parameter|Value|Default|Description
 `merge_normal_plain.threads`|Int|8|Number of samtools threads
 `merge_normal_plain.memory`|Int|16|Memory in GB
 `merge_normal_plain.timeout`|Int|24|Wall-clock timeout in hours
-`cram_longitudinal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`cram_longitudinal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_longitudinal.threads`|Int|8|Number of samtools threads
 `cram_longitudinal.memory`|Int|16|Memory in GB
 `cram_longitudinal.timeout`|Int|24|Wall-clock timeout in hours
@@ -498,6 +497,15 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       export NXF_HOME=~{nextflow_home}
+
+      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
+      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
+      # nothing about the cause. Check it here instead.
+      [ -d "${NXF_HOME}/plugins" ] || {
+        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
+        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+        exit 1
+      }
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
@@ -627,6 +635,15 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       export NXF_HOME=~{nextflow_home}
+
+      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
+      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
+      # nothing about the cause. Check it here instead.
+      [ -d "${NXF_HOME}/plugins" ] || {
+        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
+        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+        exit 1
+      }
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
       bin_dir="$(pwd)/bin"

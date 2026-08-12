@@ -296,6 +296,15 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       export NXF_HOME=~{nextflow_home}
+
+      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
+      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
+      # nothing about the cause. Check it here instead.
+      [ -d "${NXF_HOME}/plugins" ] || {
+        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
+        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+        exit 1
+      }
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
@@ -425,6 +434,15 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       export NXF_HOME=~{nextflow_home}
+
+      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
+      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
+      # nothing about the cause. Check it here instead.
+      [ -d "${NXF_HOME}/plugins" ] || {
+        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
+        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+        exit 1
+      }
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
       bin_dir="$(pwd)/bin"

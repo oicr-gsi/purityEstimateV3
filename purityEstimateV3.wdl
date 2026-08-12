@@ -1119,16 +1119,26 @@ task run_wgts {
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      export NXF_HOME=~{nextflow_home}
-
-      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
-      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
-      # nothing about the cause. Check it here instead.
-      [ -d "${NXF_HOME}/plugins" ] || {
-        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
-        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
+      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
+      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      nxf_home="~{nextflow_home}"
+      if [ ! -d "${nxf_home}/plugins" ]; then
+        for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
+          if [ -d "${cand}/plugins" ]; then
+            echo "WARNING: NEXTFLOW_HOME (${nxf_home}) has no plugins/; using ${cand}" >&2
+            echo "         Fix NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+            nxf_home="${cand}"
+            break
+          fi
+        done
+      fi
+      [ -d "${nxf_home}/plugins" ] || {
+        echo "ERROR: no NXF_HOME with a plugins/ directory. Tried ${nxf_home} and" >&2
+        echo "       ${ONCOANALYSER_ROOT:-<ONCOANALYSER_ROOT unset>}/nextflow_home*" >&2
         exit 1
       }
+      export NXF_HOME="${nxf_home}"
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
@@ -1321,16 +1331,26 @@ task run_purity_estimate {
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      export NXF_HOME=~{nextflow_home}
-
-      # The pre-cached nf-schema plugin lives under NXF_HOME. With NXF_OFFLINE=true a missing
-      # or empty NXF_HOME fails much later, inside plugin resolution, with a message that says
-      # nothing about the cause. Check it here instead.
-      [ -d "${NXF_HOME}/plugins" ] || {
-        echo "ERROR: NXF_HOME has no plugins/ directory: ${NXF_HOME}" >&2
-        echo "       Check NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
+      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
+      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      nxf_home="~{nextflow_home}"
+      if [ ! -d "${nxf_home}/plugins" ]; then
+        for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
+          if [ -d "${cand}/plugins" ]; then
+            echo "WARNING: NEXTFLOW_HOME (${nxf_home}) has no plugins/; using ${cand}" >&2
+            echo "         Fix NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+            nxf_home="${cand}"
+            break
+          fi
+        done
+      fi
+      [ -d "${nxf_home}/plugins" ] || {
+        echo "ERROR: no NXF_HOME with a plugins/ directory. Tried ${nxf_home} and" >&2
+        echo "       ${ONCOANALYSER_ROOT:-<ONCOANALYSER_ROOT unset>}/nextflow_home*" >&2
         exit 1
       }
+      export NXF_HOME="${nxf_home}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
       bin_dir="$(pwd)/bin"

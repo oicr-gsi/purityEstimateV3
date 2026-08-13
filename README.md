@@ -6,25 +6,7 @@ Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA
 
 ![purityEstimateV3 workflow](docs/purityEstimateV3.svg)
 
-The two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz; regenerate with `bash v3/render.sh`.
-
-### One sequencing platform per pipeline run
-
-oncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.
-
-Note that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.
-
-Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides it for data with a missing or wrong tag. Three consequences are enforced:
-
-* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.
-* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.
-* the PE run processes only the longitudinal sample, so it is always single-platform and needs no such check.
-
-### Germline calls and LOH
-
-**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration: `enable_germline` is a hardcoded literal in `workflows/wgts.nf`. They are therefore still produced, but excluded from the WG archive because MRD does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. Note the calls still exist in the Nextflow work directory until it is cleaned, so this controls delivery rather than generation.
-
-**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. WISP's AMBER_LOH method needs the primary normal as a `redux_dir` samplesheet input, because `wisp_analysis` derives the normal alignment from `REDUX_DIR_NORMAL`; a normal supplied as a BAM is accepted by samplesheet validation and then silently ignored, and `-amber_dir` is never passed. The PE run consequently does not take the normal at all: it would serve only LOH, while costing a second REDUX pass plus AMBER for no result. The SNV estimate is unaffected either way, because SAGE_APPEND is only ever given the longitudinal sample's REDUX output.
+In the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz; regenerate with `bash v3/render.sh`.
 
 ### Valid input combinations
 
@@ -34,27 +16,26 @@ Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides
 | PE | - | not used | required | required |
 | WG_PE | required | **required** | required | - |
 
-`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded.
+`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded. 
 
-### A tumour-only primary gives a FALSE MRD-POSITIVE
+Normal alignments is required because without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.
 
-Without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.
+### Inputs with mixed platform (Illumina or Ultima)
 
-This has been measured, and confirmed by re-running the same primaries with their normals; see the GSI wiki page for the numbers.
+oncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.
 
-WG and WG_PE therefore FAIL without `normal_alignments`, unconditionally, and there is no override flag.
+Note that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.
 
-PE mode is not checked, and cannot be. A PE run receives the primary as already-called results in a tarball, and nothing in that tarball reliably records whether a matched normal was used: germline files would be the obvious marker but this workflow excludes them by default. SUPPLYING A TARBALL THAT CAME FROM A TUMOUR/NORMAL WG RUN IS THE CALLER'S RESPONSIBILITY. A tarball from a tumour-only primary will produce a confident, entirely wrong MRD-positive with no warning anywhere.
+Platform is read per sample from the @RG PL tag; The wdl input `sequencing_platform` overrides it for data with a missing or wrong tag. Note:
 
-Note that this is a different role for the normal than the one the PE step dropped. The WG step needs it as the GERMLINE REFERENCE for somatic calling, which is what makes it mandatory. The PE step would only have used it for WISP AMBER_LOH, which never engaged. Both remain true at once: the normal is required as an input, the WG step uses it, and the PE step still does not receive it.
+* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.
+* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.
 
-Leave `tumor_sample_id` unset. In WG modes it comes from the tumour @RG SM tag; in PE mode it is derived from the tarball's purple/ filenames, and a supplied value that disagrees is rejected. A wrong value otherwise fails deep inside SAGE_APPEND, after REDUX and COBALT have already run.
+### Note on deliverables of wdl
 
-### Recommended production shapes
+**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration. They are therefore still produced, but excluded from the WG results because MRD assay does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. 
 
-* Single platform with matched normal: WG_PE with tumour, normal and longitudinal samples. The normal gives a proper tumour/normal somatic call set for the primary, which is what the MRD assessment is built on.
-* Illumina primary with Ultima ctDNA: WG_PE with the Illumina tumour and normal plus the Ultima longitudinal sample works directly. The WG run uses illumina and the PE run uses ultima. Running WG and PE as two separate jobs is equivalent.
-* Tumour-only primary: NOT supported for MRD, and refused by default. See above.
+**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. 
 
 ## Dependencies
 

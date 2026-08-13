@@ -1,36 +1,41 @@
 # purityEstimateV3
 
-Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina, Roche SBX or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.
+## Overview
 
-### One sequencing platform per pipeline run
+Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.
 
-oncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.
+![purityEstimateV3 workflow](docs/purityEstimateV3.svg)
 
-Note that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.
-
-Platform is read per sample from the @RG PL tag; `sequencing_platform` overrides it for data with a missing or wrong tag. Two consequences are enforced:
-
-* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.
-* if samples inside one pipeline run disagree on platform, the run is refused before Nextflow starts, unless `allow_mixed_platforms` is true.
+In the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz; regenerate with `bash v3/render.sh`.
 
 ### Valid input combinations
 
 | mode | tumor_alignments | normal_alignments | longitudinal_alignments | wgts_tarball |
 |---|---|---|---|---|
-| WG | required | optional | - | - |
-| PE | - | optional | required | required |
-| WG_PE | required | optional | required | - |
+| WG | required | **required** | - | - |
+| PE | - | not used | required | required |
+| WG_PE | required | **required** | required | - |
 
-Leave `tumor_sample_id` unset. In WG modes it comes from the tumour @RG SM tag; in PE mode it is derived from the tarball's purple/ filenames, and a supplied value that disagrees is rejected. A wrong value otherwise fails deep inside SAGE_APPEND, after REDUX and COBALT have already run.
+`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded. 
 
-Omitting `normal_alignments` costs LOH: purity then comes from COBALT and SNVs only, with no amber_dir input.
+Normal alignments is required because without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.
 
-### Recommended production shapes
+### Inputs with mixed platform (Illumina or Ultima)
 
-* Single platform with matched normal: WG_PE with tumour, normal and longitudinal samples, giving the full LOH-aware estimate.
-* Illumina primary with Ultima ctDNA: run WG on the Illumina pair, then PE against that tarball with the Ultima longitudinal sample and no normal_alignments, so each pipeline run stays single-platform. This is the validated configuration.
+oncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.
 
-## Overview
+Note that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.
+
+Platform is read per sample from the @RG PL tag; The wdl input `sequencing_platform` overrides it for data with a missing or wrong tag. Note:
+
+* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.
+* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.
+
+### Note on deliverables of wdl
+
+**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration. They are therefore still produced, but excluded from the WG results because MRD assay does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. 
+
+**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. 
 
 ## Dependencies
 
@@ -62,7 +67,7 @@ Parameter|Value|Description
 Parameter|Value|Default|Description
 ---|---|---|---
 `tumor_alignments`|Array[Alignment]?|None|Primary tumour BAM/CRAM(s) with indices; required for WG and WG_PE mode. Multiple entries (e.g. per flowcell) are merged
-`normal_alignments`|Array[Alignment]?|None|Matched normal BAM/CRAM(s) with indices; optional. Omitting it gives tumour-only WGTS, and LOH-free purity estimation
+`normal_alignments`|Array[Alignment]?|None|Matched normal BAM/CRAM(s) with indices. MANDATORY for WG and WG_PE, with no override: without it the primary is called tumour-only, germline variants are not subtracted from the somatic call set, and the MRD result is a false positive. Not used by the PE step, which does not pass the normal to WISP; supplying it in PE mode wastes staging effort
 `longitudinal_alignments`|Array[Alignment]?|None|ctDNA BAM/CRAM(s) with indices; required for PE and WG_PE mode. Multiple entries are merged
 `wgts_tarball`|File?|None|Tarball produced by a prior WG run (amber/, cobalt/, purple/, pave/, sage/); required for PE mode
 `tumor_sample_id`|String?|None|Primary tumour sample ID. Normally leave unset: in WG modes it is read from the tumour @RG SM tag, and in PE mode it is derived from the WG tarball's purple/ filenames. If given, it overrides the @RG SM tag in WG modes and is cross-checked against the tarball in PE mode
@@ -70,10 +75,10 @@ Parameter|Value|Default|Description
 `run_redux`|Boolean|false|When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs
 `run_control`|Boolean|false|When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)
 `controls`|Array[Pair[String,String]]?|None|PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true
+`include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work, which would save only about 2 minutes
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
-`resources_root`|String|"/.mounts/labs/gsi/src/hmftools"|Root of the staged oncoanalyser 3.x resources. Every resource path below is derived from it, so a future oncoanalyser/3.x module needs only these defaults changed
-`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1"|Environment modules to load. Deliberately excludes the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow (25.04.3) is too old for this pipeline
+`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. oncoanalyser/3.0.0-rc.3 supplies the pipeline checkout, the Singularity image cache, NXF_HOME, the qsub shim, the OICR overlay config and the Nextflow launcher on PATH; oncoanalyser-data supplies the HMF reference bundle and hs38DH. The paths below read variables exported by both. Do NOT substitute the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow is too old for this pipeline
 
 
 #### Optional task parameters:
@@ -90,7 +95,7 @@ Parameter|Value|Default|Description
 `longitudinal_info.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `longitudinal_info.memory`|Int|4|Memory in GB
 `longitudinal_info.timeout`|Int|1|Wall-clock timeout in hours
-`cram_tumor.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`cram_tumor.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_tumor.threads`|Int|8|Number of samtools threads
 `cram_tumor.memory`|Int|16|Memory in GB
 `cram_tumor.timeout`|Int|24|Wall-clock timeout in hours
@@ -110,7 +115,7 @@ Parameter|Value|Default|Description
 `merge_tumor_plain.threads`|Int|8|Number of samtools threads
 `merge_tumor_plain.memory`|Int|16|Memory in GB
 `merge_tumor_plain.timeout`|Int|24|Wall-clock timeout in hours
-`cram_normal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`cram_normal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_normal.threads`|Int|8|Number of samtools threads
 `cram_normal.memory`|Int|16|Memory in GB
 `cram_normal.timeout`|Int|24|Wall-clock timeout in hours
@@ -130,7 +135,7 @@ Parameter|Value|Default|Description
 `merge_normal_plain.threads`|Int|8|Number of samtools threads
 `merge_normal_plain.memory`|Int|16|Memory in GB
 `merge_normal_plain.timeout`|Int|24|Wall-clock timeout in hours
-`cram_longitudinal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`cram_longitudinal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_longitudinal.threads`|Int|8|Number of samtools threads
 `cram_longitudinal.memory`|Int|16|Memory in GB
 `cram_longitudinal.timeout`|Int|24|Wall-clock timeout in hours
@@ -212,6 +217,16 @@ This section lists command(s) run by purityEstimateV3 workflow
         esac
       fi
 
+      # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
+      # matched normal SAGE cannot subtract germline variants, so the somatic call set is
+      # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
+      # homozygous frequencies, and WISP reports that as tumour fraction. Measured, and
+      # confirmed by re-running the same primaries with their normals. Unconditional hard
+      # error, no override: a tumour-only primary has no legitimate use here.
+      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
+        errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
+      fi
+
       if [ "${#errors[@]}" -gt 0 ]; then
         echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
         for e in "${errors[@]}"; do
@@ -220,9 +235,12 @@ This section lists command(s) run by purityEstimateV3 workflow
         exit 1
       fi
 
-      # Advisory only: these combinations run, but not the way people usually expect.
-      if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
-        echo "note: no normal_alignments, so WGTS runs tumour-only and purity estimation has no LOH input" >&2
+      if [ "${mode}" = "PE" ] && ~{if has_normal then "true" else "false"}; then
+        {
+          echo "note: normal_alignments is not used in PE mode. The PE run processes only the"
+          echo "      longitudinal sample, so the normal would be staged (CRAM conversion,"
+          echo "      fixmate, merge) at real cost and then discarded. Omit it."
+        } >&2
       fi
 
       echo "inputs OK for mode ${mode}"
@@ -398,25 +416,23 @@ This section lists command(s) run by purityEstimateV3 workflow
       normal_sample_id="~{normal_sample_id}"
       normal_platform="~{normal_platform}"
 
-      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
-      # samples below. Refuse rather than silently apply the wrong error model to one of them.
+      # This run processes the tumour AND the normal, but oncoanalyser applies ONE
+      # --sequencing_platform per run, so a tumour/normal pair split across platforms would
+      # get the wrong error model applied to one of them. There is no way to drop the normal
+      # from a tumour/normal analysis, so refuse unless explicitly overridden.
       if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
         {
           echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
           echo "  this run uses --sequencing_platform ~{sequencing_platform}"
           echo "  but the normal sample is ${normal_platform}"
-          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
-          echo "would be analysed with the wrong error model."
         } >&2
         if ~{allow_mixed_platforms}; then
-          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
-          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
+          echo "WARNING: proceeding because allow_mixed_platforms=true; results for the" >&2
+          echo "         ${normal_platform} sample are not trustworthy." >&2
         else
           {
-            echo "REFUSING TO LAUNCH. Options:"
-            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
-            echo "  - use samples sequenced on one platform"
-            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
+            echo "REFUSING TO LAUNCH. Use a tumour/normal pair from one platform, or set"
+            echo "allow_mixed_platforms=true for a deliberate experiment."
           } >&2
           exit 1
         fi
@@ -461,7 +477,26 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      export NXF_HOME=~{nextflow_home}
+      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
+      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
+      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      nxf_home="~{nextflow_home}"
+      if [ ! -d "${nxf_home}/plugins" ]; then
+        for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
+          if [ -d "${cand}/plugins" ]; then
+            echo "WARNING: NEXTFLOW_HOME (${nxf_home}) has no plugins/; using ${cand}" >&2
+            echo "         Fix NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+            nxf_home="${cand}"
+            break
+          fi
+        done
+      fi
+      [ -d "${nxf_home}/plugins" ] || {
+        echo "ERROR: no NXF_HOME with a plugins/ directory. Tried ${nxf_home} and" >&2
+        echo "       ${ONCOANALYSER_ROOT:-<ONCOANALYSER_ROOT unset>}/nextflow_home*" >&2
+        exit 1
+      }
+      export NXF_HOME="${nxf_home}"
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
@@ -471,6 +506,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       chmod +x "${bin_dir}/qsub"
       export PATH="${bin_dir}:$PATH"
 
+      # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
+      # display rewrites lines and truncates process names to a nominal width, e.g.
+      # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
+      # mode prints one untruncated line per process event. NOTE the comment has to sit HERE,
+      # above the invocation: a # inside the backslash continuation would comment out the
+      # rest of the command, and womtool cannot catch that because it does not parse bash.
       ~{nextflow_bin} run ~{pipeline_dir}/main.nf \
           --mode wgts \
           --sequencing_platform ~{sequencing_platform} \
@@ -484,6 +525,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           -profile singularity \
           -c ~{oicr_config} \
           "${stub_args[@]}" \
+          -ansi-log false \
           -resume
 
       echo "${abs_outdir}/~{group_id}" > output_dir.txt
@@ -506,7 +548,21 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
         exit 1
       fi
+
+      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
+      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
+      # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
+      # be switched off from configuration. Disabling it would need a source patch and would
+      # save only about 2 minutes, so removing the outputs is the better trade.
+      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
+      # verified against a real archive that nothing else matches it.
+      exclude_args=()
+      if ! ~{include_germline_outputs}; then
+        exclude_args=(--exclude='*germline*')
+      fi
+
       tar -czf ~{outdir}.wgts.tar.gz \
+          "${exclude_args[@]}" \
           -C "${abs_outdir}/~{group_id}" \
           "${tar_dirs[@]}"
 
@@ -518,43 +574,8 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       WORKDIR=$(pwd)
 
-      # Optional inputs render as the empty string when absent, so capture them in shell
-      # variables and branch on those rather than testing the interpolation directly.
-      normal_bam="~{normal_bam}"
-      normal_bai="~{normal_bai}"
-      normal_sample_id="~{normal_sample_id}"
-      normal_platform="~{normal_platform}"
-
-      # oncoanalyser takes ONE --sequencing_platform per run, and this run processes both
-      # samples below. Refuse rather than silently apply the wrong error model to one of them.
-      if [ -n "${normal_platform}" ] && [ "${normal_platform}" != "~{sequencing_platform}" ]; then
-        {
-          echo "mixed sequencing platforms within a SINGLE oncoanalyser run:"
-          echo "  this run uses --sequencing_platform ~{sequencing_platform}"
-          echo "  but the normal sample is ${normal_platform}"
-          echo "oncoanalyser has no per-sample platform setting, so one of the two samples"
-          echo "would be analysed with the wrong error model."
-        } >&2
-        if ~{allow_mixed_platforms}; then
-          echo "WARNING: proceeding anyway because allow_mixed_platforms=true." >&2
-          echo "         Results for the ${normal_platform} sample are not trustworthy." >&2
-        else
-          {
-            echo "REFUSING TO LAUNCH. Options:"
-            echo "  - omit normal_alignments so this run is single-platform (loses LOH)"
-            echo "  - use samples sequenced on one platform"
-            echo "  - set allow_mixed_platforms=true for a deliberate experiment"
-          } >&2
-          exit 1
-        fi
-      fi
-
       ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
       ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
-      if [ -n "${normal_bam}" ]; then
-        ln -s "${normal_bam}" "${WORKDIR}/${normal_sample_id}.bam"
-        ln -s "${normal_bai}" "${WORKDIR}/${normal_sample_id}.bam.bai"
-      fi
 
       if ~{run_redux}; then
         filetype="bam"
@@ -571,23 +592,25 @@ This section lists command(s) run by purityEstimateV3 workflow
         long_info="longitudinal_sample;${redux_info}"
       fi
 
-      # AMBER only earns its keep when a primary normal is available for LOH, and
-      # oncoanalyser errors on an amber_dir input without one.
-      if [ -n "${normal_bam}" ]; then
-        processes="redux,amber,cobalt,sage_append,wisp"
-      else
-        processes="redux,cobalt,sage_append,wisp"
-      fi
+      # No AMBER: it is only of use for the LOH contribution, which cannot currently be
+      # obtained (see the samplesheet comment below), and running it costs a second REDUX for
+      # the normal plus AMBER itself for nothing.
+      processes="redux,cobalt,sage_append,wisp"
 
+      # The primary normal is deliberately NOT part of this run. It would only serve WISP's
+      # AMBER_LOH method, and that method cannot engage as things stand: wisp_analysis derives
+      # primary_normal_aln from REDUX_DIR_NORMAL, so the normal has to be supplied as a
+      # redux_dir, not as an alignment. Supplying it as a BAM passes samplesheet validation
+      # (Utils.groovy accepts hasNormalDnaBam OR hasNormalDnaReduxInput) and then silently
+      # yields no LOH -- while costing a second REDUX for the normal plus AMBER. The SNV
+      # result is unaffected either way, because SAGE_APPEND is given only the longitudinal
+      # REDUX output.
+      #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
         echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{wgts_outdir}/purple/"
-        if [ -n "${normal_bam}" ]; then
-          echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,amber_dir,,~{wgts_outdir}/amber/"
-          echo "~{group_id},~{subject_id},${normal_sample_id},normal,dna,${filetype},${redux_info},${WORKDIR}/${normal_sample_id}.bam"
-        fi
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 
@@ -602,7 +625,26 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      export NXF_HOME=~{nextflow_home}
+      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
+      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
+      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      nxf_home="~{nextflow_home}"
+      if [ ! -d "${nxf_home}/plugins" ]; then
+        for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
+          if [ -d "${cand}/plugins" ]; then
+            echo "WARNING: NEXTFLOW_HOME (${nxf_home}) has no plugins/; using ${cand}" >&2
+            echo "         Fix NEXTFLOW_HOME in the oncoanalyser modulefile." >&2
+            nxf_home="${cand}"
+            break
+          fi
+        done
+      fi
+      [ -d "${nxf_home}/plugins" ] || {
+        echo "ERROR: no NXF_HOME with a plugins/ directory. Tried ${nxf_home} and" >&2
+        echo "       ${ONCOANALYSER_ROOT:-<ONCOANALYSER_ROOT unset>}/nextflow_home*" >&2
+        exit 1
+      }
+      export NXF_HOME="${nxf_home}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
       bin_dir="$(pwd)/bin"
@@ -611,6 +653,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       chmod +x "${bin_dir}/qsub"
       export PATH="${bin_dir}:$PATH"
 
+      # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
+      # display rewrites lines and truncates process names to a nominal width, e.g.
+      # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
+      # mode prints one untruncated line per process event. NOTE the comment has to sit HERE,
+      # above the invocation: a # inside the backslash continuation would comment out the
+      # rest of the command, and womtool cannot catch that because it does not parse bash.
       ~{nextflow_bin} run ~{pipeline_dir}/main.nf \
           --mode purity_estimate \
           --purity_estimate_mode wgts \
@@ -625,6 +673,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           -profile singularity \
           -c ~{oicr_config} \
           "${stub_args[@]}" \
+          -ansi-log false \
           -resume
 
       abs_outdir=$(readlink -f ~{outdir})

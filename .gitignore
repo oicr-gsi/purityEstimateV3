@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Cromwell / test scratch
+cromwell-executions/
+cromwell-workflow-logs/
+*.log
+inputs.json
+test_inputs*.json
+
+# Rendered diagrams: the SVG in docs/ IS committed; PNGs are rendered on
+# demand for wiki attachments (bash v3/render.sh --png) and never committed.
+*.png
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

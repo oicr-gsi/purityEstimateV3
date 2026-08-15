@@ -203,6 +203,157 @@ This section lists command(s) run by purityEstimateV3 workflow
       echo "primary tumour sample ID: ${tumor_sample_id}"
 ```
 ```
+      set -euo pipefail
+
+      SRC="~{purple_dir}"
+      TUMOR="~{tumor_sample_id}"
+      VCF_NAME="${TUMOR}.purple.somatic.vcf.gz"
+      SRC_VCF="${SRC}/${VCF_NAME}"
+      DEST="$(pwd)/purple_corrected"
+      REPORT=primary_site_assessment.txt
+      : > "${REPORT}"
+
+      # Anything that stops us assessing is reported and then ignored: an unusable VCF must
+      # not take down a run that would otherwise have produced a result.
+      give_up() {
+        echo "NOTE: primary variant assessment skipped: $1" >&2
+        { echo "assessment: SKIPPED"; echo "reason: $1"; } >> "${REPORT}"
+        echo "-1" > usable_sites.txt
+        echo "0"  > germline_removed.txt
+        echo "${SRC}" > purple_dir_out.txt
+        exit 0
+      }
+
+      [ -s "${SRC_VCF}" ] || give_up "no ${VCF_NAME} in ${SRC}"
+
+      # Sample columns resolved BY NAME, never by position. If the columns are the other way
+      # round a hardcoded index tests the tumour instead of the normal, which removes the
+      # entire call set and yields a confident MRD-negative with no error anywhere.
+      mapfile -t SAMPLES < <(bcftools query -l "${SRC_VCF}")
+      [ "${#SAMPLES[@]}" -eq 2 ] || give_up "expected 2 samples in ${VCF_NAME}, found ${#SAMPLES[@]}"
+      TUM_IDX=""; NORM_IDX=""
+      for i in 0 1; do
+        if [ "${SAMPLES[$i]}" = "${TUMOR}" ]; then TUM_IDX=$i; NORM_IDX=$((1 - i)); fi
+      done
+      [ -n "${TUM_IDX}" ] || give_up "tumour '${TUMOR}' not among VCF samples: ${SAMPLES[*]}"
+
+      HDR=$(bcftools view -h "${SRC_VCF}")
+      has() { grep -q "^##$1=<ID=$2," ```"${HDR}"; }
+
+      # These fields were renamed between hmftools versions. RABQ was the raw,
+      # pre-recalibration quality; ABQ is the recalibrated one the filter is defined on.
+      QUAL=""
+      if has FORMAT ABQ; then QUAL=ABQ; elif has FORMAT RABQ; then QUAL=RABQ; fi
+      REPC_FIELDS=()
+      has INFO RC_REPC && REPC_FIELDS+=(RC_REPC)
+      has INFO REP_C   && REPC_FIELDS+=(REP_C)
+
+      GERMLINE_EXPR=""
+      if [ -n "${QUAL}" ]; then
+        GERMLINE_EXPR="(FORMAT/AD[${NORM_IDX}:1]/FORMAT/DP[${NORM_IDX}]) > 0.01 & FORMAT/${QUAL}[${NORM_IDX}:1] > 30"
+      fi
+
+      # name|mode|expression. mode i = keep matching, e = drop matching. The germline filter
+      # has to be an exclude: bcftools cannot negate an indexed FORMAT expression.
+      FILTERS=()
+      FILTERS+=("PASS|i|FILTER=\"PASS\"")
+      has INFO MAPPABILITY  && FILTERS+=("mappability|i|INFO/MAPPABILITY>0.5")
+      for rf in "${REPC_FIELDS[@]+"${REPC_FIELDS[@]}"}"; do
+        FILTERS+=("repeat_${rf}|i|INFO/${rf}<4 || INFO/${rf}==\".\"")
+      done
+      FILTERS+=("snv_only|i|TYPE=\"snp\"")
+      has INFO TIER         && FILTERS+=("low_confidence|i|INFO/TIER!=\"LOW_CONFIDENCE\"")
+      has INFO NEARBY_INDEL && FILTERS+=("nearby_indel|i|INFO/NEARBY_INDEL=0")
+      if has INFO SUBCL && has INFO PURPLE_VCN; then
+        FILTERS+=("subclonal|i|INFO/SUBCL<=0.5 || INFO/PURPLE_VCN>=0.7")
+      fi
+      if has FORMAT AED; then
+        FILTERS+=("aed|i|FORMAT/AED[${TUM_IDX}:1] >= 0.06")
+      elif has INFO AED; then
+        FILTERS+=("aed|i|INFO/AED >= 0.06")
+      fi
+      [ -n "${GERMLINE_EXPR}" ] && FILTERS+=("germline|e|${GERMLINE_EXPR}")
+
+      {
+        echo "primary sample: ${TUMOR}"
+        echo "vcf:            ${VCF_NAME}"
+        echo "samples:        [0]=${SAMPLES[0]} [1]=${SAMPLES[1]}"
+        echo "normal column:  ${NORM_IDX} (${SAMPLES[$NORM_IDX]})"
+        echo "qual field:     ${QUAL:-NONE, germline filter not applied}"
+        echo "repeat fields:  ${REPC_FIELDS[*]+"${REPC_FIELDS[*]}"}"
+        echo
+        printf '%-16s %10s %10s\n' "filter" "remaining" "lost"
+      } >> "${REPORT}"
+
+      WORK=$(mktemp -d)
+      cp "${SRC_VCF}" "${WORK}/cur.vcf.gz"
+      bcftools index -t -f "${WORK}/cur.vcf.gz"
+      TOTAL=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
+      printf '%-16s %10s %10s\n' "(total)" "${TOTAL}" "-" >> "${REPORT}"
+
+      PREV=${TOTAL}
+      for entry in "${FILTERS[@]}"; do
+        name="${entry%%|*}"; rest="${entry#*|}"; mode="${rest%%|*}"; expr="${rest#*|}"
+        # A field can exist in the header and still be unusable by this bcftools build, so
+        # a failing expression is reported and skipped rather than killing the run.
+        if ! bcftools view "-${mode}" "${expr}" -Oz -o "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz" 2>"${WORK}/err"; then
+          printf '%-16s %10s %10s\n' "${name}" "SKIPPED" "$(head -1 "${WORK}/err" | cut -c1-40)" >> "${REPORT}"
+          continue
+        fi
+        mv "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz"
+        bcftools index -t -f "${WORK}/cur.vcf.gz"
+        n=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
+        printf '%-16s %10s %10s\n' "${name}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
+        PREV=${n}
+      done
+      USABLE=${PREV}
+      echo "${USABLE}" > usable_sites.txt
+      { echo; echo "usable sites for MRD: ${USABLE}"; } >> "${REPORT}"
+
+      REMOVED=0
+      OUT_DIR="${SRC}"
+      if ~{apply_correction} && [ -n "${GERMLINE_EXPR}" ]; then
+        KEPT=$(bcftools view -H -e "${GERMLINE_EXPR}" "${SRC_VCF}" | wc -l)
+        REMOVED=$(( TOTAL - KEPT ))
+        if [ "${TOTAL}" -gt 0 ] && [ $(( REMOVED * 2 )) -gt "${TOTAL}" ]; then
+          echo "ERROR: the germline filter would remove ${REMOVED} of ${TOTAL} variants (>50%)." >&2
+          echo "       That is the signature of testing the wrong sample column, not a real" >&2
+          echo "       germline load. normal=${SAMPLES[$NORM_IDX]} idx=${NORM_IDX} qual=${QUAL}" >&2
+          exit 1
+        fi
+        # Copy: the source is either a tarball extraction or another task's output, and
+        # neither may be mutated in place.
+        mkdir -p "${DEST}"
+        cp -r "${SRC}/." "${DEST}/"
+        # The original is kept beside the corrected one under a .prefilter. name.
+        # oncoanalyser resolves the somatic VCF by its exact filename, so the copy is inert.
+        mv "${DEST}/${VCF_NAME}" "${DEST}/${TUMOR}.purple.somatic.prefilter.vcf.gz"
+        if [ -f "${DEST}/${VCF_NAME}.tbi" ]; then
+          mv "${DEST}/${VCF_NAME}.tbi" "${DEST}/${TUMOR}.purple.somatic.prefilter.vcf.gz.tbi"
+        fi
+        bcftools view -e "${GERMLINE_EXPR}" -Oz -o "${DEST}/${VCF_NAME}" "${SRC_VCF}"
+        bcftools index -t -f "${DEST}/${VCF_NAME}"
+        OUT_DIR="${DEST}"
+        { echo
+          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants"
+          echo "original retained as ${TUMOR}.purple.somatic.prefilter.vcf.gz"
+        } >> "${REPORT}"
+      else
+        { echo; echo "germline correction: not applied"; } >> "${REPORT}"
+      fi
+      echo "${REMOVED}" > germline_removed.txt
+      echo "${OUT_DIR}" > purple_dir_out.txt
+
+      rm -rf "${WORK}"
+      cat "${REPORT}" >&2
+
+      if [ "~{min_usable_sites}" -gt 0 ] && [ "${USABLE}" -lt "~{min_usable_sites}" ]; then
+        echo "ERROR: only ${USABLE} usable sites, below min_usable_sites=~{min_usable_sites}." >&2
+        echo "       This primary is unlikely to support a reliable MRD assessment." >&2
+        exit 1
+      fi
+```
+```
         set -euo pipefail
 
         ## concatenate the summaries
@@ -428,7 +579,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       # sample: oncoanalyser treats that as a fatal input clash.
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
-        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{wgts_outdir}/purple/"
+        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{primary_purple_dir}"
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 

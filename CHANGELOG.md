@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$ONCOANALYSER_OICR_CONFIG`, and `nextflow` from PATH (the module ships 25.10.4). Reference
   data comes from the separate `oncoanalyser-data/3.0.0` module via `$ONCOANALYSER_DATA_ROOT`.
   The `resources_root` input is gone and no absolute paths remain in the workflow.
+- New `assess_primary_variants` step, doing two things with the primary's somatic VCF:
+  - **Triage.** Reports how many candidate sites survive each WISP filter in turn, so a
+    primary too weak to support MRD is identifiable before a plasma run is committed.
+    Provisioned as `primary_site_report`. `min_usable_sites` can gate on the final count;
+    it defaults to 0, which reports without gating.
+  - **Germline correction.** Removes germline-supported sites from the VCF that feeds
+    SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does
+    not pass the reference sample id through and WISP has no genotype to test (confirmed by
+    Hartwig 2026-08-12; fix due after v3.0). Those sites sit at germline frequency in the
+    patient's own cfDNA and are counted as tumour signal. Disable with
+    `apply_germline_correction = false`. The uncorrected VCF is retained beside the
+    corrected one as `<sample>.purple.somatic.prefilter.vcf.gz`.
 - Accepts BAM or CRAM for every sample. CRAMs are decoded against hs38DH, the reference
   the Ultima vendor encodes with; multiple alignments per sample are merged.
 - Per-sample sequencing platform detection from the `@RG PL` tag, overridable with

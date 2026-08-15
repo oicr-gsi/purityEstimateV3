@@ -2,6 +2,10 @@
     {
         "arguments": {
             "purityEstimateV3.allow_mixed_platforms": null,
+            "purityEstimateV3.apply_germline_correction": null,
+            "purityEstimateV3.assess_primary_variants.memory": null,
+            "purityEstimateV3.assess_primary_variants.modules": null,
+            "purityEstimateV3.assess_primary_variants.timeout": null,
             "purityEstimateV3.collect_results.memory": null,
             "purityEstimateV3.collect_results.timeout": null,
             "purityEstimateV3.control_info.memory": null,
@@ -78,6 +82,7 @@
             "purityEstimateV3.merge_tumor_plain.modules": null,
             "purityEstimateV3.merge_tumor_plain.threads": null,
             "purityEstimateV3.merge_tumor_plain.timeout": null,
+            "purityEstimateV3.min_usable_sites": null,
             "purityEstimateV3.mode": "WG",
             "purityEstimateV3.modules": null,
             "purityEstimateV3.nextflow_stub": null,
@@ -216,7 +221,7 @@
         },
         "id": "purityEstimateV3_test_01_WG",
         "metadata": {
-            "purityEstimateV3.wg_tarball": {
+            "purityEstimateV3.pipeline_info": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
@@ -224,7 +229,15 @@
                 ],
                 "type": "ALL"
             },
-            "purityEstimateV3.wisp_tarballs": {
+            "purityEstimateV3.primary_site_report": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wg_tarball": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
@@ -240,7 +253,7 @@
                 ],
                 "type": "ALL"
             },
-            "purityEstimateV3.pipeline_info": {
+            "purityEstimateV3.wisp_tarballs": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
@@ -261,6 +274,10 @@
     {
         "arguments": {
             "purityEstimateV3.allow_mixed_platforms": null,
+            "purityEstimateV3.apply_germline_correction": null,
+            "purityEstimateV3.assess_primary_variants.memory": null,
+            "purityEstimateV3.assess_primary_variants.modules": null,
+            "purityEstimateV3.assess_primary_variants.timeout": null,
             "purityEstimateV3.collect_results.memory": null,
             "purityEstimateV3.collect_results.timeout": null,
             "purityEstimateV3.control_info.memory": null,
@@ -364,6 +381,7 @@
             "purityEstimateV3.merge_tumor_plain.modules": null,
             "purityEstimateV3.merge_tumor_plain.threads": null,
             "purityEstimateV3.merge_tumor_plain.timeout": null,
+            "purityEstimateV3.min_usable_sites": null,
             "purityEstimateV3.mode": "PE",
             "purityEstimateV3.modules": null,
             "purityEstimateV3.nextflow_stub": null,
@@ -407,7 +425,7 @@
         },
         "id": "purityEstimateV3_test_02_PE",
         "metadata": {
-            "purityEstimateV3.wg_tarball": {
+            "purityEstimateV3.pipeline_info": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
@@ -415,7 +433,15 @@
                 ],
                 "type": "ALL"
             },
-            "purityEstimateV3.wisp_tarballs": {
+            "purityEstimateV3.primary_site_report": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wg_tarball": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
@@ -431,7 +457,7 @@
                 ],
                 "type": "ALL"
             },
-            "purityEstimateV3.pipeline_info": {
+            "purityEstimateV3.wisp_tarballs": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
@@ -452,6 +478,10 @@
     {
         "arguments": {
             "purityEstimateV3.allow_mixed_platforms": null,
+            "purityEstimateV3.apply_germline_correction": null,
+            "purityEstimateV3.assess_primary_variants.memory": null,
+            "purityEstimateV3.assess_primary_variants.modules": null,
+            "purityEstimateV3.assess_primary_variants.timeout": null,
             "purityEstimateV3.collect_results.memory": null,
             "purityEstimateV3.collect_results.timeout": null,
             "purityEstimateV3.control_info.memory": null,
@@ -555,6 +585,7 @@
             "purityEstimateV3.merge_tumor_plain.modules": null,
             "purityEstimateV3.merge_tumor_plain.threads": null,
             "purityEstimateV3.merge_tumor_plain.timeout": null,
+            "purityEstimateV3.min_usable_sites": null,
             "purityEstimateV3.mode": "WG_PE",
             "purityEstimateV3.modules": null,
             "purityEstimateV3.nextflow_stub": null,
@@ -693,7 +724,7 @@
         },
         "id": "purityEstimateV3_test_03_WG_PE",
         "metadata": {
-            "purityEstimateV3.wg_tarball": {
+            "purityEstimateV3.pipeline_info": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
@@ -701,7 +732,15 @@
                 ],
                 "type": "ALL"
             },
-            "purityEstimateV3.wisp_tarballs": {
+            "purityEstimateV3.primary_site_report": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wg_tarball": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
@@ -717,7 +756,7 @@
                 ],
                 "type": "ALL"
             },
-            "purityEstimateV3.pipeline_info": {
+            "purityEstimateV3.wisp_tarballs": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"

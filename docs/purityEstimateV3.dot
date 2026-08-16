@@ -100,6 +100,7 @@ digraph purityEstimateV3 {
 
     // ------------------------------------------------- loose WDL tasks
     extract [label="extract_wgts\nunpack the tarball,\nderive the primary sample ID"];
+    assess  [label="assess_primary_variants\ncount usable sites per filter,\nstrip germline-supported sites"];
     collect [label="collect_results\ncombine subject + controls"];
 
     // ---------------------------------------------------------------- outputs
@@ -112,6 +113,7 @@ digraph purityEstimateV3 {
         out_sum  [label="wisp_summary\nSNV_MRD per sample"];
         out_wisp [label="wisp_tarballs\nsubject + controls"];
         out_info [label="pipeline_info\nreport, trace, versions"];
+        out_rep  [label="primary_site_report\nusable sites, per filter"];
     }
 
     // ------------------------------------------------------------------ wiring
@@ -124,9 +126,11 @@ digraph purityEstimateV3 {
     merge -> pe_redux [lhead=cluster_pe label="  PE, WG_PE\l  plasma\l"];
 
     wg_purple -> out_tar [ltail=cluster_wg];
-    extract   -> pe_sage [lhead=cluster_pe label="  purple_dir"];
-    wg_purple -> pe_sage [ltail=cluster_wg lhead=cluster_pe style=bold
-                          label="  WG_PE: straight off disk,\l  no tarball round trip\l"];
+    extract   -> assess  [label="  PE: purple_dir\l  from the tarball\l"];
+    wg_purple -> assess  [ltail=cluster_wg style=bold
+                          label="  WG, WG_PE: purple_dir\l  straight off disk\l"];
+    assess    -> pe_sage [lhead=cluster_pe label="  corrected purple_dir"];
+    assess    -> out_rep [style=dashed color="#aaaaaa"];
 
     pe_wisp -> collect  [ltail=cluster_pe];
     pe_wisp -> out_info [ltail=cluster_pe style=dashed];

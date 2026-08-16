@@ -38,8 +38,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
       # matched normal SAGE cannot subtract germline variants, so the somatic call set is
       # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
-      # homozygous frequencies, and WISP reports that as tumour fraction. Measured, and
-      # confirmed by re-running the same primaries with their normals. Unconditional hard
+      # homozygous frequencies, and WISP reports that as tumour fraction. Unconditional hard
       # error, no override: a tumour-only primary has no legitimate use here.
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
@@ -140,8 +139,8 @@ This section lists command(s) run by purityEstimateV3 workflow
         fi
       }
 
-      # @PG stripping: bwa embeds tab-separated fields in CL: causing htsjdk to produce a
-      # spurious second ID: field -> SAMFormatException in Redux.
+      # @PG stripping: an aligner may embed tab-separated fields in CL:, which makes htsjdk
+      # read a spurious second ID: field and reject the header.
       # Flag fix: per-chromosome fixmate may clear 0x1 while leaving 0x40/0x80 set on
       # discordant-mate reads; htsjdk treats this as a validation error.
       if ~{sanitize_header}; then
@@ -165,11 +164,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       tar -xzf ~{tarball} -C wgts_extracted/
       echo "$(pwd)/wgts_extracted" > output_dir.txt
 
-      # Work out the primary tumour sample ID from the PURPLE filenames rather than trusting a
+      # Derive the primary tumour sample ID from the PURPLE filenames rather than trusting a
       # hand-typed input. SAGE_APPEND reads <tumor_sample_id>.purple.somatic.vcf.gz, so a wrong
-      # ID fails with "invalid path for config: input_vcf = ..." only AFTER REDUX and COBALT
-      # have run. The WG step names these files from the tumour BAM's @RG SM tag, which is
-      # rarely the same string as group_id -- an easy and expensive mistake to make by hand.
+      # ID would fail only after the expensive steps have run. The WG step names these files
+      # from the tumour @RG SM tag, which is rarely the same string as group_id.
       shopt -s nullglob
       ids=()
       for f in wgts_extracted/purple/*.purple.purity.tsv; do
@@ -446,9 +444,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
-      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
-      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
+      # obscurely inside plugin resolution. Prefer the module's value, falling back to a
+      # sibling directory that does have plugins/.
       nxf_home="~{nextflow_home}"
       if [ ! -d "${nxf_home}/plugins" ]; then
         for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
@@ -471,7 +469,7 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       bin_dir="$(pwd)/bin"
       mkdir -p "${bin_dir}"
-      cp ~{qsub_wrapper} "${bin_dir}/qsub"
+      cp ~{submit_wrapper} "${bin_dir}/qsub"
       chmod +x "${bin_dir}/qsub"
       export PATH="${bin_dir}:$PATH"
 
@@ -492,7 +490,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{oicr_config} \
+          -c ~{site_config} \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume
@@ -522,7 +520,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
       # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
       # be switched off from configuration. Disabling it would need a source patch and would
-      # save only about 2 minutes, so removing the outputs is the better trade.
+      # save very little time, so removing the outputs is the better trade.
       # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
       # verified against a real archive that nothing else matches it.
       exclude_args=()
@@ -594,9 +592,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
-      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
-      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
+      # obscurely inside plugin resolution. Prefer the module's value, falling back to a
+      # sibling directory that does have plugins/.
       nxf_home="~{nextflow_home}"
       if [ ! -d "${nxf_home}/plugins" ]; then
         for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
@@ -618,7 +616,7 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       bin_dir="$(pwd)/bin"
       mkdir -p "${bin_dir}"
-      cp ~{qsub_wrapper} "${bin_dir}/qsub"
+      cp ~{submit_wrapper} "${bin_dir}/qsub"
       chmod +x "${bin_dir}/qsub"
       export PATH="${bin_dir}:$PATH"
 
@@ -640,7 +638,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{oicr_config} \
+          -c ~{site_config} \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume

@@ -429,10 +429,14 @@ This section lists command(s) run by purityEstimateV3 workflow
       HDR=$(bcftools view -h "${SRC_VCF}")
       has() { grep -q "^##$1=<ID=$2," ```"${HDR}"; }
 
-      # These fields were renamed between hmftools versions. RABQ was the raw,
-      # pre-recalibration quality; ABQ is the recalibrated one the filter is defined on.
+      # The quality field has been renamed across hmftools versions. ARCBQ is the name the
+      # WISP filter is documented against and what current SAGE emits; ABQ is the older
+      # equivalent and is still what externally supplied VCFs may carry. RABQ is
+      # deliberately NOT accepted: it is the raw, pre-recalibration value, so applying the
+      # threshold to it would filter on the wrong quantity. Better to skip the filter and
+      # say so than to apply it to a field that does not mean what the threshold assumes.
       QUAL=""
-      if has FORMAT ABQ; then QUAL=ABQ; elif has FORMAT RABQ; then QUAL=RABQ; fi
+      if has FORMAT ARCBQ; then QUAL=ARCBQ; elif has FORMAT ABQ; then QUAL=ABQ; fi
       REPC_FIELDS=()
       has INFO RC_REPC && REPC_FIELDS+=(RC_REPC)
       has INFO REP_C   && REPC_FIELDS+=(REP_C)

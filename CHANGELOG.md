@@ -34,7 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     not pass the reference sample id through and WISP has no genotype to test (confirmed by
     Hartwig 2026-08-12; fix due after v3.0). Those sites sit at germline frequency in the
     patient's own cfDNA and are counted as tumour signal. Disable with
-    `apply_germline_correction = false`. The uncorrected VCF is retained beside the
+    `apply_germline_correction = false`. The quality field is read as `ARCBQ`, falling back to
+    `ABQ` for VCFs produced by older versions; `RABQ` is rejected because it is the raw,
+    pre-recalibration value. The uncorrected VCF is retained beside the
     corrected one as `<sample>.purple.somatic.prefilter.vcf.gz`.
 - Accepts BAM or CRAM for every sample. CRAMs are decoded against hs38DH, the reference
   the Ultima vendor encodes with; multiple alignments per sample are merged.

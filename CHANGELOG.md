@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-17
+### Added
+- `assess_primary_variants`, which does two things with the primary's somatic VCF.
+  - **Triage.** Reports how many candidate sites survive each WISP filter in turn, so a
+    primary too weak to support MRD is identifiable before a plasma run is committed.
+    Provisioned as `primary_site_report`. `min_usable_sites` skips purity estimation below a
+    threshold; the run still succeeds and provisions whatever was produced, so the report
+    explaining the decision is always delivered. Defaults to 0, which reports without gating.
+  - **Germline correction.** Removes germline-supported sites from the VCF that feeds
+    SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does
+    not pass the reference sample id through and WISP therefore has no genotype to test.
+    Those sites sit at germline frequency in the patient's own cfDNA and are counted as
+    tumour signal, so the error is in the false-positive direction. Disable with
+    `apply_germline_correction = false`. The quality field is read as `ARCBQ`, falling back
+    to `ABQ` for VCFs from older versions; `RABQ` is rejected as the raw, pre-recalibration
+    value. The uncorrected VCF is retained as `<sample>.purple.somatic.prefilter.vcf.gz`.
+
+### Changed
+- `pipeline_info` is now OPTIONAL. A run whose purity estimation is skipped launches no
+  Nextflow stage at all, so there is no `pipeline_info` to provision. `primary_site_report`
+  is the output that is always present.
+- Two inputs renamed to drop site-specific names: `oicr_config` to `site_config`, and
+  `qsub_wrapper` to `submit_wrapper`.
+- Comments and `parameter_meta` no longer carry measured timings, past error strings or
+  site-specific detail.
+
 ## [1.0.0] - 2026-08-10
 ### Added
 - First version. Wraps nf-core/oncoanalyser 3.0.0-rc.3 for tumour-informed MRD
@@ -21,23 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$ONCOANALYSER_OICR_CONFIG`, and `nextflow` from PATH (the module ships 25.10.4). Reference
   data comes from the separate `oncoanalyser-data/3.0.0` module via `$ONCOANALYSER_DATA_ROOT`.
   The `resources_root` input is gone and no absolute paths remain in the workflow.
-- New `assess_primary_variants` step, doing two things with the primary's somatic VCF:
-  - **Triage.** Reports how many candidate sites survive each WISP filter in turn, so a
-    primary too weak to support MRD is identifiable before a plasma run is committed.
-    Provisioned as `primary_site_report`. `min_usable_sites` skips purity estimation below
-    a threshold; the run still succeeds and provisions what exists, so the report
-    explaining the decision is always delivered. Defaults to 0, which reports without
-    gating. `pipeline_info` is consequently optional: a skipped PE run launches no
-    Nextflow stage at all, and `primary_site_report` is the always-present output.
-  - **Germline correction.** Removes germline-supported sites from the VCF that feeds
-    SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does
-    not pass the reference sample id through and WISP has no genotype to test (confirmed by
-    Hartwig 2026-08-12; fix due after v3.0). Those sites sit at germline frequency in the
-    patient's own cfDNA and are counted as tumour signal. Disable with
-    `apply_germline_correction = false`. The quality field is read as `ARCBQ`, falling back to
-    `ABQ` for VCFs produced by older versions; `RABQ` is rejected because it is the raw,
-    pre-recalibration value. The uncorrected VCF is retained beside the
-    corrected one as `<sample>.purple.somatic.prefilter.vcf.gz`.
 - Accepts BAM or CRAM for every sample. CRAMs are decoded against hs38DH, the reference
   the Ultima vendor encodes with; multiple alignments per sample are merged.
 - Per-sample sequencing platform detection from the `@RG PL` tag, overridable with

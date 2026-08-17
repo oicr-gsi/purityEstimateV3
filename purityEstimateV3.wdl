@@ -365,6 +365,7 @@ workflow purityEstimateV3 {
         input:
             purple_dir       = primary_wgts_dir + "/purple",
             tumor_sample_id  = primary_sample_id,
+            outputFileNamePrefix = outputFileNamePrefix,
             apply_correction = apply_germline_correction && mode != "WG",
             min_usable_sites = min_usable_sites
     }
@@ -975,6 +976,7 @@ task assess_primary_variants {
     input {
         String  purple_dir
         String  tumor_sample_id
+        String  outputFileNamePrefix
         Boolean apply_correction
         Int     min_usable_sites
         String  modules = "bcftools/1.9"
@@ -985,6 +987,7 @@ task assess_primary_variants {
     parameter_meta {
         purple_dir:       "PURPLE output directory of the primary, holding <tumor_sample_id>.purple.somatic.vcf.gz"
         tumor_sample_id:  "Primary tumour sample ID; also used to identify which VCF column is the tumour, and hence which is the normal"
+        outputFileNamePrefix: "Prefix for the report filename, so runs of different samples do not provision the same name"
         apply_correction: "Whether to write a germline-corrected copy of the somatic VCF. False reports the triage counts and leaves the VCF untouched"
         min_usable_sites: "Below this many usable sites, report sufficient_sites=false so the caller can skip purity estimation. This task never fails on the count: failing would discard the report that explains why. 0 disables the gate"
         modules:          "Environment modules to load (bcftools required)"
@@ -1000,7 +1003,7 @@ task assess_primary_variants {
       VCF_NAME="${TUMOR}.purple.somatic.vcf.gz"
       SRC_VCF="${SRC}/${VCF_NAME}"
       DEST="$(pwd)/purple_corrected"
-      REPORT=primary_site_assessment.txt
+      REPORT="~{outputFileNamePrefix}.primary_site_assessment.txt"
       : > "${REPORT}"
 
       # Anything that stops us assessing is reported and then ignored: an unusable VCF must
@@ -1163,7 +1166,7 @@ task assess_primary_variants {
         Int    usable_sites     = read_int("usable_sites.txt")
         Int    germline_removed = read_int("germline_removed.txt")
         String purple_dir_out   = read_string("purple_dir_out.txt")
-        File   site_report      = "primary_site_assessment.txt"
+        File   site_report      = "~{outputFileNamePrefix}.primary_site_assessment.txt"
     }
 
     runtime {

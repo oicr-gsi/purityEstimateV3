@@ -396,7 +396,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       VCF_NAME="${TUMOR}.purple.somatic.vcf.gz"
       SRC_VCF="${SRC}/${VCF_NAME}"
       DEST="$(pwd)/purple_corrected"
-      REPORT=primary_site_assessment.txt
+      REPORT="~{outputFileNamePrefix}.primary_site_assessment.txt"
       : > "${REPORT}"
 
       # Anything that stops us assessing is reported and then ignored: an unusable VCF must

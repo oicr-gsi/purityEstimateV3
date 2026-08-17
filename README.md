@@ -78,7 +78,7 @@ Parameter|Value|Default|Description
 `include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
 `apply_germline_correction`|Boolean|true|Whether to strip germline-supported sites from the primary somatic VCF before it reaches SAGE_APPEND. WISP documents a germline filter but never applies it, because oncoanalyser does not pass the reference sample id through and WISP therefore has no genotype to test. Those sites sit at germline frequency in the patient's own cfDNA and are counted as tumour signal, so the error is in the false-positive direction. Set false to reproduce uncorrected results, or once the upstream fix lands
-`min_usable_sites`|Int|0|Fail the run if fewer than this many primary sites survive all WISP filters. 0, the default, reports the count without gating. The count and its per-filter breakdown are always written to primary_site_report, which is what identifies a primary too weak to support MRD before a plasma run is committed
+`min_usable_sites`|Int|0|Skip purity estimation when fewer than this many primary sites survive all WISP filters. The run still succeeds and provisions whatever was produced, including the report explaining the decision; only the WISP outputs are absent. 0, the default, reports the count without gating. The count and its per-filter breakdown always go to primary_site_report, which is what identifies a primary too weak to support MRD before a plasma run is committed
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
 `modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NXF_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
 
@@ -182,7 +182,7 @@ Output | Type | Description | Labels
 `wg_tarball`|File?|Tarball of oncoanalyser WGTS outputs (amber/, cobalt/, purple/, pave/, sage/) for the primary tumour sample; produced in WG and WG_PE mode. Used as the wgts_tarball input for a subsequent PE run. REDUX alignments are deliberately excluded to keep the archive small.|vidarr_label: wgTarball
 `wisp_tarballs`|File?|Combined tarball of WISP output directories for the subject longitudinal sample and all control samples; produced in PE and WG_PE mode.|vidarr_label: wispTarballs
 `wisp_summary`|File?|TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.|vidarr_label: wispSummary
-`pipeline_info`|File|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions) from the primary nextflow run; always produced. In WG_PE mode the PE run's pipeline_info is used.|vidarr_label: pipelineInfo
+`pipeline_info`|File?|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions). In WG_PE mode the PE run's copy is used. Absent only when no Nextflow stage ran, which happens when a PE run is skipped for having too few usable primary sites.|vidarr_label: pipelineInfo
 `primary_site_report`|File|Plain-text assessment of the primary tumour's variant list: how many candidate sites survive each WISP filter in turn, and how many germline-supported sites were removed. The final count is the number of sites available for MRD assessment, which is what identifies a primary too weak to support it.|vidarr_label: primarySiteReport
 
 
@@ -407,6 +407,9 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "-1" > usable_sites.txt
         echo "0"  > germline_removed.txt
         echo "${SRC}" > purple_dir_out.txt
+        # Unassessable is not the same as insufficient: proceed rather than silently
+        # skipping the analysis on the strength of a count we could not make.
+        echo "true" > sufficient_sites.txt
         exit 0
       }
 
@@ -533,11 +536,18 @@ This section lists command(s) run by purityEstimateV3 workflow
       rm -rf "${WORK}"
       cat "${REPORT}" >&2
 
+      # Signal rather than fail. A non-zero exit would discard every output of this run,
+      # including the report that explains the decision, and would also sink a WG run that
+      # has nothing to do with purity estimation.
+      SUFFICIENT=true
       if [ "~{min_usable_sites}" -gt 0 ] && [ "${USABLE}" -lt "~{min_usable_sites}" ]; then
-        echo "ERROR: only ${USABLE} usable sites, below min_usable_sites=~{min_usable_sites}." >&2
-        echo "       This primary is unlikely to support a reliable MRD assessment." >&2
-        exit 1
+        SUFFICIENT=false
+        echo "NOTE: ${USABLE} usable sites is below min_usable_sites=~{min_usable_sites};" >&2
+        echo "      skipping purity estimation. This primary is unlikely to support a" >&2
+        echo "      reliable MRD assessment." >&2
+        { echo; echo "DECISION: insufficient sites, purity estimation skipped"; } >> "${REPORT}"
       fi
+      echo "${SUFFICIENT}" > sufficient_sites.txt
 ```
 ```
         set -euo pipefail

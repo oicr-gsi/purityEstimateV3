@@ -219,6 +219,9 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "-1" > usable_sites.txt
         echo "0"  > germline_removed.txt
         echo "${SRC}" > purple_dir_out.txt
+        # Unassessable is not the same as insufficient: proceed rather than silently
+        # skipping the analysis on the strength of a count we could not make.
+        echo "true" > sufficient_sites.txt
         exit 0
       }
 
@@ -345,11 +348,18 @@ This section lists command(s) run by purityEstimateV3 workflow
       rm -rf "${WORK}"
       cat "${REPORT}" >&2
 
+      # Signal rather than fail. A non-zero exit would discard every output of this run,
+      # including the report that explains the decision, and would also sink a WG run that
+      # has nothing to do with purity estimation.
+      SUFFICIENT=true
       if [ "~{min_usable_sites}" -gt 0 ] && [ "${USABLE}" -lt "~{min_usable_sites}" ]; then
-        echo "ERROR: only ${USABLE} usable sites, below min_usable_sites=~{min_usable_sites}." >&2
-        echo "       This primary is unlikely to support a reliable MRD assessment." >&2
-        exit 1
+        SUFFICIENT=false
+        echo "NOTE: ${USABLE} usable sites is below min_usable_sites=~{min_usable_sites};" >&2
+        echo "      skipping purity estimation. This primary is unlikely to support a" >&2
+        echo "      reliable MRD assessment." >&2
+        { echo; echo "DECISION: insufficient sites, purity estimation skipped"; } >> "${REPORT}"
       fi
+      echo "${SUFFICIENT}" > sufficient_sites.txt
 ```
 ```
         set -euo pipefail

@@ -24,8 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `assess_primary_variants` step, doing two things with the primary's somatic VCF:
   - **Triage.** Reports how many candidate sites survive each WISP filter in turn, so a
     primary too weak to support MRD is identifiable before a plasma run is committed.
-    Provisioned as `primary_site_report`. `min_usable_sites` can gate on the final count;
-    it defaults to 0, which reports without gating.
+    Provisioned as `primary_site_report`. `min_usable_sites` skips purity estimation below
+    a threshold; the run still succeeds and provisions what exists, so the report
+    explaining the decision is always delivered. Defaults to 0, which reports without
+    gating. `pipeline_info` is consequently optional: a skipped PE run launches no
+    Nextflow stage at all, and `primary_site_report` is the always-present output.
   - **Germline correction.** Removes germline-supported sites from the VCF that feeds
     SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does
     not pass the reference sample id through and WISP has no genotype to test (confirmed by

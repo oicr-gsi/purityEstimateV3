@@ -490,13 +490,20 @@ workflow purityEstimateV3 {
         }
     }
 
+    # Whichever stage ran last produced the pipeline_info; in WG_PE that is the PE stage.
+    # Neither is defined when purity estimation was skipped in PE mode, which is why this is
+    # a conditional rather than select_first. It is computed here rather than in the output
+    # block because an output whose value is a compound expression cannot be wrapped by the
+    # Vidarr output preprocessor; outputs must be plain references.
+    File? pipeline_info_selected = if defined(subject_purity.pipeline_info_tarball)
+                                  then subject_purity.pipeline_info_tarball
+                                  else run_wgts.pipeline_info_tarball
+
     output {
         File? wg_tarball    = run_wgts.wgts_tarball    # produced in WG and WG_PE mode only
         File? wisp_tarballs = collect_results.wisp_tarballs
         File? wisp_summary  = collect_results.wisp_summary
-        File? pipeline_info = if defined(subject_purity.pipeline_info_tarball)
-                              then subject_purity.pipeline_info_tarball
-                              else run_wgts.pipeline_info_tarball
+        File? pipeline_info = pipeline_info_selected
         File  primary_site_report = assess_primary_variants.site_report
     }
 }

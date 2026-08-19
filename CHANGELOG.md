@@ -12,14 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Provisioned as `primary_site_report`. `min_usable_sites` skips purity estimation below a
     threshold; the run still succeeds and provisions whatever was produced, so the report
     explaining the decision is always delivered. Defaults to 0, which reports without gating.
-  - **Germline correction.** Removes germline-supported sites from the VCF that feeds
+  - **Germline correction.** Removes normal-supported sites from the VCF that feeds
     SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does
     not pass the reference sample id through and WISP therefore has no genotype to test.
-    Those sites sit at germline frequency in the patient's own cfDNA and are counted as
-    tumour signal, so the error is in the false-positive direction. Disable with
-    `apply_germline_correction = false`. The quality field is read as `ARCBQ`, falling back
-    to `ABQ` for VCFs from older versions; `RABQ` is rejected as the raw, pre-recalibration
-    value. The uncorrected VCF is retained as `<sample>.purple.somatic.prefilter.vcf.gz`.
+    The test is normal VAF above 1%, far below heterozygous frequency, so alongside germline
+    variants it also catches low-level artefacts shared by tumour and normal. Either way the
+    support does not come from the tumour, so counting them as tumour signal errs in the
+    false-positive direction. Disable with `apply_germline_correction = false`. The quality
+    field is read as `ARCBQ`, falling back to `ABQ` for VCFs from older versions; `RABQ` is
+    rejected as the raw, pre-recalibration value. The uncorrected VCF is retained as
+    `<sample>.purple.somatic.prefilter.vcf.gz`.
+    The report gives both counts for this filter, with their denominators: what it removes
+    from the whole VCF, and how much of that was still in the usable set. The two differ by
+    a lot, because the triage table applies the filter last.
 
 ### Changed
 - `pipeline_info` is now OPTIONAL. A run whose purity estimation is skipped launches no

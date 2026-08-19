@@ -77,7 +77,7 @@ Parameter|Value|Default|Description
 `controls`|Array[Pair[String,String]]?|None|PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true
 `include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
-`apply_germline_correction`|Boolean|true|Whether to strip germline-supported sites from the primary somatic VCF before it reaches SAGE_APPEND. WISP documents a germline filter but never applies it, because oncoanalyser does not pass the reference sample id through and WISP therefore has no genotype to test. Those sites sit at germline frequency in the patient's own cfDNA and are counted as tumour signal, so the error is in the false-positive direction. Set false to reproduce uncorrected results, or once the upstream fix lands
+`apply_germline_correction`|Boolean|true|Whether to strip normal-supported sites from the primary somatic VCF before it reaches SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does not pass the reference sample id through and WISP therefore has no genotype to test. The test is normal VAF above 1 percent with a recalibrated base quality above 30. That threshold is far below heterozygous frequency, so alongside germline variants it also catches low-level artefacts shared by tumour and normal; both are sites whose support does not come from the tumour, and counting them as tumour signal errs in the false-positive direction. Set false to reproduce uncorrected results, or once the upstream fix lands
 `min_usable_sites`|Int|0|Skip purity estimation when fewer than this many primary sites survive all WISP filters. The run still succeeds and provisions whatever was produced, including the report explaining the decision; only the WISP outputs are absent. 0, the default, reports the count without gating. The count and its per-filter breakdown always go to primary_site_report, which is what identifies a primary too weak to support MRD before a plasma run is committed
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
 `modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NXF_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
@@ -183,7 +183,7 @@ Output | Type | Description | Labels
 `wisp_tarballs`|File?|Combined tarball of WISP output directories for the subject longitudinal sample and all control samples; produced in PE and WG_PE mode.|vidarr_label: wispTarballs
 `wisp_summary`|File?|TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.|vidarr_label: wispSummary
 `pipeline_info`|File?|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions). In WG_PE mode the PE run's copy is used. Absent only when no Nextflow stage ran, which happens when a PE run is skipped for having too few usable primary sites.|vidarr_label: pipelineInfo
-`primary_site_report`|File|Plain-text assessment of the primary tumour's variant list: how many candidate sites survive each WISP filter in turn, and how many germline-supported sites were removed. The final count is the number of sites available for MRD assessment, which is what identifies a primary too weak to support it.|vidarr_label: primarySiteReport
+`primary_site_report`|File|Plain-text assessment of the primary tumour's variant list: how many candidate sites survive each WISP filter in turn, and how many normal-supported sites were removed. The final count is the number of sites available for MRD assessment, which is what identifies a primary too weak to support it.|vidarr_label: primarySiteReport
 
 
 ## Commands
@@ -485,6 +485,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       printf '%-16s %10s %10s\n' "(total)" "${TOTAL}" "-" >> "${REPORT}"
 
       PREV=${TOTAL}
+      GERMLINE_LOST=""
       for entry in "${FILTERS[@]}"; do
         name="${entry%%|*}"; rest="${entry#*|}"; mode="${rest%%|*}"; expr="${rest#*|}"
         # A field can exist in the header and still be unusable by this bcftools build, so
@@ -497,6 +498,9 @@ This section lists command(s) run by purityEstimateV3 workflow
         bcftools index -t -f "${WORK}/cur.vcf.gz"
         n=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
         printf '%-16s %10s %10s\n' "${name}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
+        # Kept so the correction can report what this filter cost the USABLE set, which is
+        # a much smaller number than what it removes from the whole VCF.
+        if [ "${name}" = "germline" ]; then GERMLINE_LOST=$(( PREV - n )); fi
         PREV=${n}
       done
       USABLE=${PREV}
@@ -527,8 +531,16 @@ This section lists command(s) run by purityEstimateV3 workflow
         bcftools view -e "${GERMLINE_EXPR}" -Oz -o "${DEST}/${VCF_NAME}" "${SRC_VCF}"
         bcftools index -t -f "${DEST}/${VCF_NAME}"
         OUT_DIR="${DEST}"
+        # Two different denominators, so say which is which. The table applies this filter
+        # LAST, to whatever survived the others, while the correction applies it alone to
+        # the whole VCF. Printed without explanation the two counts look contradictory.
         { echo
-          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants"
+          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants from the VCF"
+          if [ -n "${GERMLINE_LOST}" ]; then
+            echo "  of those, ${GERMLINE_LOST} were still in the usable set when the table"
+            echo "  above reached the germline row; the rest had already been dropped by"
+            echo "  the filters above it"
+          fi
           echo "original retained as ${TUMOR}.purple.somatic.prefilter.vcf.gz"
         } >> "${REPORT}"
       else

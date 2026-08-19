@@ -297,6 +297,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       printf '%-16s %10s %10s\n' "(total)" "${TOTAL}" "-" >> "${REPORT}"
 
       PREV=${TOTAL}
+      GERMLINE_LOST=""
       for entry in "${FILTERS[@]}"; do
         name="${entry%%|*}"; rest="${entry#*|}"; mode="${rest%%|*}"; expr="${rest#*|}"
         # A field can exist in the header and still be unusable by this bcftools build, so
@@ -309,6 +310,9 @@ This section lists command(s) run by purityEstimateV3 workflow
         bcftools index -t -f "${WORK}/cur.vcf.gz"
         n=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
         printf '%-16s %10s %10s\n' "${name}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
+        # Kept so the correction can report what this filter cost the USABLE set, which is
+        # a much smaller number than what it removes from the whole VCF.
+        if [ "${name}" = "germline" ]; then GERMLINE_LOST=$(( PREV - n )); fi
         PREV=${n}
       done
       USABLE=${PREV}
@@ -339,8 +343,16 @@ This section lists command(s) run by purityEstimateV3 workflow
         bcftools view -e "${GERMLINE_EXPR}" -Oz -o "${DEST}/${VCF_NAME}" "${SRC_VCF}"
         bcftools index -t -f "${DEST}/${VCF_NAME}"
         OUT_DIR="${DEST}"
+        # Two different denominators, so say which is which. The table applies this filter
+        # LAST, to whatever survived the others, while the correction applies it alone to
+        # the whole VCF. Printed without explanation the two counts look contradictory.
         { echo
-          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants"
+          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants from the VCF"
+          if [ -n "${GERMLINE_LOST}" ]; then
+            echo "  of those, ${GERMLINE_LOST} were still in the usable set when the table"
+            echo "  above reached the germline row; the rest had already been dropped by"
+            echo "  the filters above it"
+          fi
           echo "original retained as ${TUMOR}.purple.somatic.prefilter.vcf.gz"
         } >> "${REPORT}"
       else

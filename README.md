@@ -448,21 +448,22 @@ This section lists command(s) run by purityEstimateV3 workflow
         GERMLINE_EXPR="(FORMAT/AD[${NORM_IDX}:1]/FORMAT/DP[${NORM_IDX}]) > 0.01 & FORMAT/${QUAL}[${NORM_IDX}:1] > 30"
       fi
 
-      # name|mode|expression. mode i = keep matching, e = drop matching. The germline filter
-      # has to be an exclude: bcftools cannot negate an indexed FORMAT expression.
+      # tag|mode|expression. mode i = flag when the expression is FALSE, e = flag when TRUE.
+      # The germline filter has to be an exclude: bcftools cannot negate an indexed FORMAT
+      # expression. Tags are what land in the VCF FILTER column, so they are uppercase and
+      # match the condition names the WISP documentation uses.
       FILTERS=()
-      FILTERS+=("PASS|i|FILTER=\"PASS\"")
-      has INFO MAPPABILITY  && FILTERS+=("mappability|i|INFO/MAPPABILITY>=0.5")
+      has INFO MAPPABILITY  && FILTERS+=("MAPPABILITY|i|INFO/MAPPABILITY>=0.5")
       for rf in "${REPC_FIELDS[@]+"${REPC_FIELDS[@]}"}"; do
-        FILTERS+=("repeat_${rf}|i|INFO/${rf}<4 || INFO/${rf}==\".\"")
+        FILTERS+=("${rf}|i|INFO/${rf}<4 || INFO/${rf}==\".\"")
       done
-      FILTERS+=("snv_only|i|TYPE=\"snp\"")
-      has INFO TIER         && FILTERS+=("low_confidence|i|INFO/TIER!=\"LOW_CONFIDENCE\"")
-      has INFO NEARBY_INDEL && FILTERS+=("nearby_indel|i|INFO/NEARBY_INDEL=0")
+      FILTERS+=("NON_SNV|i|TYPE=\"snp\"")
+      has INFO TIER         && FILTERS+=("LOW_CONFIDENCE|i|INFO/TIER!=\"LOW_CONFIDENCE\"")
+      has INFO NEARBY_INDEL && FILTERS+=("NEARBY_INDEL|i|INFO/NEARBY_INDEL=0")
       if has INFO SUBCL && has INFO PURPLE_VCN; then
-        FILTERS+=("subclonal|i|INFO/SUBCL<=0.5 || INFO/PURPLE_VCN>=0.7")
+        FILTERS+=("SUBCLONAL|i|INFO/SUBCL<=0.5 || INFO/PURPLE_VCN>=0.7")
       fi
-      [ -n "${GERMLINE_EXPR}" ] && FILTERS+=("germline|e|${GERMLINE_EXPR}")
+      [ -n "${GERMLINE_EXPR}" ] && FILTERS+=("GERMLINE|e|${GERMLINE_EXPR}")
 
       {
         echo "primary sample: ${TUMOR}"
@@ -481,27 +482,37 @@ This section lists command(s) run by purityEstimateV3 workflow
       } >> "${REPORT}"
 
       WORK=$(mktemp -d)
-      cp "${SRC_VCF}" "${WORK}/cur.vcf.gz"
-      bcftools index -t -f "${WORK}/cur.vcf.gz"
-      TOTAL=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
+      TOTAL=$(bcftools view -H "${SRC_VCF}" | wc -l)
       printf '%-16s %10s %10s\n' "(total)" "${TOTAL}" "-" >> "${REPORT}"
 
-      PREV=${TOTAL}
+      # Only this first step DROPS records. Everything after it SOFT-FLAGS: the record set is
+      # fixed here and later steps only add tags to the FILTER column, so the delivered VCF
+      # says per site which conditions it failed instead of silently omitting it. A consumer
+      # selects FILTER="PASS" to get the usable subset, which is also what WISP does with
+      # whatever VCF it is given.
+      bcftools view -i 'FILTER="PASS"' -Oz -o "${WORK}/cur.vcf.gz" "${SRC_VCF}"
+      bcftools index -t -f "${WORK}/cur.vcf.gz"
+      PREV=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
+      KEPT=${PREV}
+      printf '%-16s %10s %10s\n' "PASS" "${PREV}" "$(( TOTAL - PREV ))" >> "${REPORT}"
+
       GERMLINE_LOST=""
       for entry in "${FILTERS[@]}"; do
-        name="${entry%%|*}"; rest="${entry#*|}"; mode="${rest%%|*}"; expr="${rest#*|}"
+        tag="${entry%%|*}"; rest="${entry#*|}"; mode="${rest%%|*}"; expr="${rest#*|}"
         # A field can exist in the header and still be unusable by this bcftools build, so
         # a failing expression is reported and skipped rather than killing the run.
-        if ! bcftools view "-${mode}" "${expr}" -Oz -o "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz" 2>"${WORK}/err"; then
-          printf '%-16s %10s %10s\n' "${name}" "SKIPPED" "$(head -1 "${WORK}/err" | cut -c1-40)" >> "${REPORT}"
+        if ! bcftools filter -s "${tag}" -m + "-${mode}" "${expr}" \
+             -Oz -o "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz" 2>"${WORK}/err"; then
+          printf '%-16s %10s %10s\n' "${tag}" "SKIPPED" "$(head -1 "${WORK}/err" | cut -c1-40)" >> "${REPORT}"
           continue
         fi
         mv "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz"
         bcftools index -t -f "${WORK}/cur.vcf.gz"
-        n=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
-        printf '%-16s %10s %10s\n' "${name}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
+        # "remaining" is how many records are still PASS, not how many are left in the file.
+        n=$(bcftools view -H -i 'FILTER="PASS"' "${WORK}/cur.vcf.gz" | wc -l)
+        printf '%-16s %10s %10s\n' "${tag}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
 
-        if [ "${name}" = "germline" ]; then GERMLINE_LOST=$(( PREV - n )); fi
+        if [ "${tag}" = "GERMLINE" ]; then GERMLINE_LOST=$(( PREV - n )); fi
         PREV=${n}
       done
       USABLE=${PREV}
@@ -518,7 +529,10 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       { echo
         echo "sites usable for MRD: ${USABLE} of ${TOTAL}"
-        echo "written as ${PREFILTERED_NAME}, alongside the unmodified ${VCF_NAME}"
+        echo "written as ${PREFILTERED_NAME}, alongside the unmodified ${VCF_NAME}."
+        echo "That file holds all ${KEPT} PASS-in-purple records; the ones that failed a"
+        echo "condition carry it in the FILTER column rather than being dropped, so select"
+        echo "FILTER=\"PASS\" for the ${USABLE} usable sites."
       } >> "${REPORT}"
 
       rm -rf "${WORK}"

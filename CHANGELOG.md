@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   untouched original**, and both go into the WG archive. A reader of that archive therefore
   sees the full call set and the MRD-usable subset, which is what a clinical report needs in
   order to say whether a plasma sample is worth taking.
+  Only the PASS step drops records. Every condition after it SOFT-FLAGS, adding its name to
+  the VCF FILTER column, so the prefiltered VCF is self-describing: it says per site which
+  conditions failed rather than silently omitting the site, and `FILTER="PASS"` selects the
+  usable subset. That is also what WISP does with whatever VCF it is handed, so handing this
+  file to the plasma stage yields the same site set as hard filtering would.
   Note that WISP applies the primary filters itself, on whatever sites it is given, and
   records the reason per site. The prefiltered VCF is a deliverable, not a correction; only
   the germline filter changes what WISP can see.

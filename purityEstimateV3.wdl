@@ -53,8 +53,7 @@ workflow purityEstimateV3 {
         String        outputFileNamePrefix
         Boolean       include_germline_outputs = false  # see parameter_meta
         Boolean       allow_mixed_platforms = false  # production guardrail; see parameter_meta
-        Boolean       apply_germline_correction = true  # see parameter_meta
-        Int           min_usable_sites = 0    # 0 = report only; see parameter_meta
+        Boolean       use_primary_filters = true  # PE mode; see parameter_meta
         Boolean       nextflow_stub = false   # run oncoanalyser with -stub; see parameter_meta
         String        modules = "java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"
     }
@@ -75,8 +74,7 @@ workflow purityEstimateV3 {
         outputFileNamePrefix:   "Output directory prefix; the pipeline writes to outputFileNamePrefix/group_id/"
         include_germline_outputs: "Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work"
         allow_mixed_platforms:  "Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning"
-        apply_germline_correction: "Whether to strip normal-supported sites from the primary somatic VCF before it reaches SAGE_APPEND. WISP documents this filter but never applies it, because oncoanalyser does not pass the reference sample id through and WISP therefore has no genotype to test. The test is normal VAF above 1 percent with a recalibrated base quality above 30. That threshold is far below heterozygous frequency, so alongside germline variants it also catches low-level artefacts shared by tumour and normal; both are sites whose support does not come from the tumour, and counting them as tumour signal errs in the false-positive direction. Set false to reproduce uncorrected results, or once the upstream fix lands"
-        min_usable_sites:       "Skip purity estimation when fewer than this many primary sites survive all WISP filters. The run still succeeds and provisions whatever was produced, including the report explaining the decision; only the WISP outputs are absent. 0, the default, reports the count without gating. The count and its per-filter breakdown always go to primary_site_report, which is what identifies a primary too weak to support MRD before a plasma run is committed"
+        use_primary_filters:    "PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing"
         nextflow_stub:          "When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run"
         modules:                "Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NXF_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step"
     }
@@ -327,7 +325,6 @@ workflow purityEstimateV3 {
                 normal_sample_id    = normal_info.sample_id,
                 normal_platform     = normal_platform,
                 run_redux           = run_redux,
-                include_germline_outputs = include_germline_outputs,
                 nextflow_stub       = nextflow_stub,
                 allow_mixed_platforms = allow_mixed_platforms,
                 sequencing_platform = select_first([tumor_platform]),
@@ -351,47 +348,53 @@ workflow purityEstimateV3 {
                 tarball                  = select_first([wgts_tarball]),
                 expected_tumor_sample_id = tumor_sample_id
         }
+        String extracted_purple_dir = extract_wgts.output_dir + "/purple"
     }
 
-    # Assess the primary's variant list, and correct the germline filter oncoanalyser never
-    # applies. Runs in every mode: in WG there is no plasma stage to correct, but the triage
-    # count is exactly what says whether this primary can support a later MRD run.
-    # Both select_first calls are safe at this scope: WG defines the run_wgts side, PE the
-    # extract_wgts side, WG_PE both.
-    String primary_wgts_dir  = select_first([run_wgts.output_dir, extract_wgts.output_dir])
+    # The primary tumour sample id, read off the outputs in both directions: PE from the
+    # tarball's purple/ filenames, WG and WG_PE from the tumour @RG SM tag.
     String primary_sample_id = select_first([extract_wgts.tumor_sample_id, wg_tumor_sample_id])
 
-    call assess_primary_variants {
-        input:
-            purple_dir       = primary_wgts_dir + "/purple",
-            tumor_sample_id  = primary_sample_id,
-            outputFileNamePrefix = outputFileNamePrefix,
-            apply_correction = apply_germline_correction && mode != "WG",
-            min_usable_sites = min_usable_sites
+    # WG modes: filter the primary's somatic VCF, then archive. Both filter sets are applied
+    # here, and the prefiltered VCF goes into the archive beside the untouched original --
+    # the WG deliverable is what a clinical report is written from, and what decides whether
+    # a plasma sample is worth taking. Packing is a separate task purely so it runs AFTER
+    # filtering and can therefore carry both VCFs.
+    if (mode == "WG" || mode == "WG_PE") {
+        call pre_filtering {
+            input:
+                purple_dir           = select_first([run_wgts.output_dir]) + "/purple",
+                tumor_sample_id      = primary_sample_id,
+                outputFileNamePrefix = outputFileNamePrefix
+        }
+
+        call pack_wgts {
+            input:
+                wgts_dir                 = select_first([run_wgts.output_dir]),
+                purple_dir               = pre_filtering.purple_dir_out,
+                outputFileNamePrefix     = outputFileNamePrefix,
+                include_germline_outputs = include_germline_outputs
+        }
     }
 
-    # Purity estimation is skipped when the primary has too few usable sites. The run still
-    # succeeds and provisions whatever exists, so the report explaining the decision, and any
-    # WG results, are still delivered.
-    if ((mode == "PE" || mode == "WG_PE") && assess_primary_variants.sufficient_sites) {
-        String effective_wgts_dir = select_first([run_wgts.output_dir, extract_wgts.output_dir])
-
-        # PE: authoritative value read off the tarball's purple/ filenames.
-        # WG_PE: the WG step just wrote those files named for wg_tumor_sample_id.
-        String pe_tumor_sample_id = select_first([extract_wgts.tumor_sample_id, wg_tumor_sample_id])
+    if (mode == "PE" || mode == "WG_PE") {
+        # WG_PE reads the primary from what pre_filtering wrote; PE from the extracted
+        # tarball.
+        String pe_purple_dir = select_first([pre_filtering.purple_dir_out, extracted_purple_dir])
 
         call run_purity_estimate as subject_purity {
             input:
                 group_id               = group_id,
                 subject_id             = subject_id,
-                tumor_sample_id        = pe_tumor_sample_id,
+                tumor_sample_id        = primary_sample_id,
                 longitudinal_bam       = select_first([longitudinal_bam]),
                 longitudinal_bai       = select_first([longitudinal_bai]),
                 longitudinal_sample_id = select_first([longitudinal_info.sample_id]),
                 run_redux              = run_redux,
                 nextflow_stub          = nextflow_stub,
                 sequencing_platform    = select_first([longitudinal_platform]),
-                primary_purple_dir     = assess_primary_variants.purple_dir_out,
+                primary_purple_dir     = pe_purple_dir,
+                use_primary_filters    = use_primary_filters,
                 outdir                 = outputFileNamePrefix,
                 ref_data_dir           = ref_data_dir,
                 images_dir             = images_dir,
@@ -413,14 +416,15 @@ workflow purityEstimateV3 {
                     input:
                         group_id               = group_id,
                         subject_id             = control.left,
-                        tumor_sample_id        = pe_tumor_sample_id,
+                        tumor_sample_id        = primary_sample_id,
                         longitudinal_bam       = control.right,
                         longitudinal_bai       = control.right + ".bai",
                         longitudinal_sample_id = control_info.sample_id,
                         run_redux              = false,
                         nextflow_stub          = nextflow_stub,
                         sequencing_platform    = select_first([sequencing_platform, control_info.platform]),
-                        primary_purple_dir     = assess_primary_variants.purple_dir_out,
+                        primary_purple_dir     = pe_purple_dir,
+                use_primary_filters    = use_primary_filters,
                         outdir                 = outputFileNamePrefix,
                         ref_data_dir           = ref_data_dir,
                         images_dir             = images_dir,
@@ -447,7 +451,7 @@ workflow purityEstimateV3 {
     meta {
         author: "Gavin Peng"
         email: "gpeng@oicr.on.ca"
-        description: "Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.\n\n![purityEstimateV3 workflow](docs/purityEstimateV3.svg)\n\nIn the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz, in docs/.\n\n### Valid input combinations\n\n| mode | tumor_alignments | normal_alignments | longitudinal_alignments | wgts_tarball |\n|---|---|---|---|---|\n| WG | required | **required** | - | - |\n| PE | - | not used | required | required |\n| WG_PE | required | **required** | required | - |\n\n`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded. \n\nNormal alignments is required because without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.\n\n### Inputs with mixed platform (Illumina or Ultima)\n\noncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.\n\nNote that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.\n\nPlatform is read per sample from the @RG PL tag; The wdl input `sequencing_platform` overrides it for data with a missing or wrong tag. Note:\n\n* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.\n* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.\n\n### Note on deliverables of wdl\n\n**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration. They are therefore still produced, but excluded from the WG results because MRD assay does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. \n\n**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. "
+        description: "Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.\n\n![purityEstimateV3 workflow](docs/purityEstimateV3.svg)\n\nIn the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz, in docs/.\n\n### Valid input combinations\n\n| mode | tumor_alignments | normal_alignments | longitudinal_alignments | wgts_tarball |\n|---|---|---|---|---|\n| WG | required | **required** | - | - |\n| PE | - | not used | required | required |\n| WG_PE | required | **required** | required | - |\n\n`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded. \n\nNormal alignments is required because without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.\n\n### Inputs with mixed platform (Illumina or Ultima)\n\noncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.\n\nNote that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.\n\nPlatform is read per sample from the @RG PL tag; The wdl input `sequencing_platform` overrides it for data with a missing or wrong tag. Note:\n\n* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.\n* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.\n\n### Note on deliverables of wdl\n\n**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration. They are therefore still produced, but excluded from the WG results because MRD assay does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. \n\n**The WG archive carries two somatic VCFs.** `<sample>.purple.somatic.vcf.gz` is PURPLE's full call set, untouched. `<sample>.purple.somatic.prefiltered.vcf.gz` is the same call set reduced to the sites that can carry MRD signal, by the primary filters (mappability, repeat count, SNV only, tier, nearby indel, subclonal) and by the germline filter that WISP documents but cannot apply, since oncoanalyser gives it no reference genotype. `primary_site_report` gives the per-filter breakdown. In PE mode `use_primary_filters` chooses which of the two the plasma stage works from; note that WISP applies the primary filters itself either way, and records the reason per site, so the prefiltered VCF is a deliverable rather than a correction.\n\n**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. "
         dependencies: [
             {
                 name: "oncoanalyser/3.0.0-rc.3",
@@ -480,31 +484,30 @@ workflow purityEstimateV3 {
                 vidarr_label: "wispSummary"
             },
             primary_site_report: {
-                description: "Plain-text assessment of the primary tumour's variant list: how many candidate sites survive each WISP filter in turn, and how many normal-supported sites were removed. The final count is the number of sites available for MRD assessment, which is what identifies a primary too weak to support it.",
+                description: "Plain-text report of the primary tumour's variant list: how many candidate sites survive each filter in turn, primary filters and the germline filter alike. The final count is the number of sites available for MRD assessment, which is what says whether a plasma sample is worth taking. Produced in WG and WG_PE mode.",
                 vidarr_label: "primarySiteReport"
             },
             pipeline_info: {
-                description: "Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions). In WG_PE mode the PE run's copy is used. Absent only when no Nextflow stage ran, which happens when a PE run is skipped for having too few usable primary sites.",
+                description: "Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions); always produced. In WG_PE mode the PE run's copy is used.",
                 vidarr_label: "pipelineInfo"
             }
         }
     }
 
     # Whichever stage ran last produced the pipeline_info; in WG_PE that is the PE stage.
-    # Neither is defined when purity estimation was skipped in PE mode, which is why this is
-    # a conditional rather than select_first. It is computed here rather than in the output
-    # block because an output whose value is a compound expression cannot be wrapped by the
-    # Vidarr output preprocessor; outputs must be plain references.
-    File? pipeline_info_selected = if defined(subject_purity.pipeline_info_tarball)
-                                  then subject_purity.pipeline_info_tarball
-                                  else run_wgts.pipeline_info_tarball
+    # Every mode runs at least one Nextflow stage, so one of the two is always defined. It is
+    # computed here rather than in the output block because an output whose value is a
+    # compound expression cannot be wrapped by the Vidarr output preprocessor; outputs must
+    # be plain references.
+    File pipeline_info_selected = select_first([subject_purity.pipeline_info_tarball,
+                                               run_wgts.pipeline_info_tarball])
 
     output {
-        File? wg_tarball    = run_wgts.wgts_tarball    # produced in WG and WG_PE mode only
-        File? wisp_tarballs = collect_results.wisp_tarballs
-        File? wisp_summary  = collect_results.wisp_summary
-        File? pipeline_info = pipeline_info_selected
-        File  primary_site_report = assess_primary_variants.site_report
+        File? wg_tarball          = pack_wgts.wgts_tarball   # WG and WG_PE only
+        File? wisp_tarballs       = collect_results.wisp_tarballs
+        File? wisp_summary        = collect_results.wisp_summary
+        File? primary_site_report = pre_filtering.site_report  # WG and WG_PE only
+        File  pipeline_info       = pipeline_info_selected
     }
 }
 
@@ -965,29 +968,35 @@ task extract_wgts {
     }
 }
 
-# Assess the primary's variant list, and correct the one filter oncoanalyser gets wrong.
+# Filter the primary's somatic VCF and report what each filter cost.
 #
-# TWO SEPARATE JOBS, deliberately in one task because both need the same VCF and the same
-# sample-column resolution:
+# TWO FILTER SETS, both applied here because both are primary-side and both need the same
+# VCF and the same sample-column resolution:
 #
-#   TRIAGE reports how many sites survive every WISP filter, broken down per filter, so a
-#   primary too weak to support MRD can be identified before a plasma run is committed.
+#   PRIMARY FILTERS   the criteria WISP uses to decide which sites can carry MRD signal:
+#                     mappability, repeat count, SNV only, tier, nearby indel, subclonal.
+#                     Two of WISP's conditions are missing on purpose: average edge distance
+#                     and the quality ratio are measured on the cfDNA sample, so they cannot
+#                     be evaluated on the primary. WISP applies both itself.
+#   GERMLINE FILTER   sites with support in the matched normal. WISP documents this one but
+#                     never applies it, because oncoanalyser does not pass the reference
+#                     sample id through and WISP therefore has no genotype to test.
 #
-#   CORRECTION removes normal-supported sites from the VCF that feeds SAGE_APPEND. WISP
-#   documents this filter but never applies it, because oncoanalyser does not pass the
-#   reference sample id through and WISP therefore has no genotype to test. The threshold is
-#   1 percent VAF in the normal, far below heterozygous frequency, so it catches germline
-#   variants and low-level artefacts shared by tumour and normal alike. Either way the
-#   support does not come from the tumour, so counting them as tumour signal errs in the
-#   false-positive direction. Only this filter is applied here; WISP applies the others
-#   correctly.
-task assess_primary_variants {
+# The result is written beside the original as <sample>.purple.somatic.prefiltered.vcf.gz.
+# The original is left untouched and BOTH go into the WG archive, so a reader of that archive
+# sees the full call set and the MRD-usable subset. The per-filter table is what says how
+# much signal a primary can support, which is the question a clinical report has to answer
+# before a plasma sample is worth taking.
+#
+# Note that WISP applies the primary filters itself, on the sites it is given, and records
+# the reason per site. Pre-filtering here does not replace that; it produces the reduced call
+# set as a deliverable. Which of the two VCFs a later PE run works from is chosen there, by
+# use_primary_filters, not here.
+task pre_filtering {
     input {
         String  purple_dir
         String  tumor_sample_id
         String  outputFileNamePrefix
-        Boolean apply_correction
-        Int     min_usable_sites
         String  modules = "bcftools/1.9"
         Int memory  = 4
         Int timeout = 2
@@ -997,8 +1006,6 @@ task assess_primary_variants {
         purple_dir:       "PURPLE output directory of the primary, holding <tumor_sample_id>.purple.somatic.vcf.gz"
         tumor_sample_id:  "Primary tumour sample ID; also used to identify which VCF column is the tumour, and hence which is the normal"
         outputFileNamePrefix: "Prefix for the report filename, so runs of different samples do not provision the same name"
-        apply_correction: "Whether to write a germline-corrected copy of the somatic VCF. False reports the triage counts and leaves the VCF untouched"
-        min_usable_sites: "Below this many usable sites, report sufficient_sites=false so the caller can skip purity estimation. This task never fails on the count: failing would discard the report that explains why. 0 disables the gate"
         modules:          "Environment modules to load (bcftools required)"
         memory:           "Memory in GB"
         timeout:          "Wall-clock timeout in hours"
@@ -1010,22 +1017,21 @@ task assess_primary_variants {
       SRC="~{purple_dir}"
       TUMOR="~{tumor_sample_id}"
       VCF_NAME="${TUMOR}.purple.somatic.vcf.gz"
+      PREFILTERED_NAME="${TUMOR}.purple.somatic.prefiltered.vcf.gz"
       SRC_VCF="${SRC}/${VCF_NAME}"
-      DEST="$(pwd)/purple_corrected"
-      REPORT="~{outputFileNamePrefix}.primary_site_assessment.txt"
+      DEST="$(pwd)/purple_prefiltered"
+      REPORT="~{outputFileNamePrefix}.primary_site_report.txt"
       : > "${REPORT}"
 
-      # Anything that stops us assessing is reported and then ignored: an unusable VCF must
-      # not take down a run that would otherwise have produced a result.
+      # Anything that stops us filtering is reported and then ignored: an unusable VCF must
+      # not take down a run that would otherwise have produced a result. The caller falls
+      # back to the unfiltered directory.
       give_up() {
-        echo "NOTE: primary variant assessment skipped: $1" >&2
-        { echo "assessment: SKIPPED"; echo "reason: $1"; } >> "${REPORT}"
+        echo "NOTE: pre-filtering skipped: $1" >&2
+        { echo "prefiltering: SKIPPED"; echo "reason: $1"; } >> "${REPORT}"
         echo "-1" > usable_sites.txt
         echo "0"  > germline_removed.txt
         echo "${SRC}" > purple_dir_out.txt
-        # Unassessable is not the same as insufficient: proceed rather than silently
-        # skipping the analysis on the strength of a count we could not make.
-        echo "true" > sufficient_sites.txt
         exit 0
       }
 
@@ -1066,7 +1072,7 @@ task assess_primary_variants {
       # has to be an exclude: bcftools cannot negate an indexed FORMAT expression.
       FILTERS=()
       FILTERS+=("PASS|i|FILTER=\"PASS\"")
-      has INFO MAPPABILITY  && FILTERS+=("mappability|i|INFO/MAPPABILITY>0.5")
+      has INFO MAPPABILITY  && FILTERS+=("mappability|i|INFO/MAPPABILITY>=0.5")
       for rf in "${REPC_FIELDS[@]+"${REPC_FIELDS[@]}"}"; do
         FILTERS+=("repeat_${rf}|i|INFO/${rf}<4 || INFO/${rf}==\".\"")
       done
@@ -1075,11 +1081,6 @@ task assess_primary_variants {
       has INFO NEARBY_INDEL && FILTERS+=("nearby_indel|i|INFO/NEARBY_INDEL=0")
       if has INFO SUBCL && has INFO PURPLE_VCN; then
         FILTERS+=("subclonal|i|INFO/SUBCL<=0.5 || INFO/PURPLE_VCN>=0.7")
-      fi
-      if has FORMAT AED; then
-        FILTERS+=("aed|i|FORMAT/AED[${TUM_IDX}:1] >= 0.06")
-      elif has INFO AED; then
-        FILTERS+=("aed|i|INFO/AED >= 0.06")
       fi
       [ -n "${GERMLINE_EXPR}" ] && FILTERS+=("germline|e|${GERMLINE_EXPR}")
 
@@ -1090,6 +1091,11 @@ task assess_primary_variants {
         echo "normal column:  ${NORM_IDX} (${SAMPLES[$NORM_IDX]})"
         echo "qual field:     ${QUAL:-NONE, germline filter not applied}"
         echo "repeat fields:  ${REPC_FIELDS[*]+"${REPC_FIELDS[*]}"}"
+        echo
+        echo "Two of WISP's conditions are measurements on the cfDNA sample and cannot be"
+        echo "evaluated here: average edge distance (AED[1] >= 0.06) and the quality ratio"
+        echo "(RC_QUAL[0]+[1]+[3])/(RC_CNT[0]+[1]+[3]) >= 18. WISP applies both itself, so the"
+        echo "count below is an upper bound on the sites it will actually use."
         echo
         printf '%-16s %10s %10s\n' "filter" "remaining" "lost"
       } >> "${REPORT}"
@@ -1114,80 +1120,36 @@ task assess_primary_variants {
         bcftools index -t -f "${WORK}/cur.vcf.gz"
         n=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
         printf '%-16s %10s %10s\n' "${name}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
-        # Kept so the correction can report what this filter cost the USABLE set, which is
-        # a much smaller number than what it removes from the whole VCF.
+
         if [ "${name}" = "germline" ]; then GERMLINE_LOST=$(( PREV - n )); fi
         PREV=${n}
       done
       USABLE=${PREV}
       echo "${USABLE}" > usable_sites.txt
-      { echo; echo "usable sites for MRD: ${USABLE}"; } >> "${REPORT}"
+      echo "${GERMLINE_LOST:-0}" > germline_removed.txt
 
-      REMOVED=0
-      OUT_DIR="${SRC}"
-      if ~{apply_correction} && [ -n "${GERMLINE_EXPR}" ]; then
-        KEPT=$(bcftools view -H -e "${GERMLINE_EXPR}" "${SRC_VCF}" | wc -l)
-        REMOVED=$(( TOTAL - KEPT ))
-        if [ "${TOTAL}" -gt 0 ] && [ $(( REMOVED * 2 )) -gt "${TOTAL}" ]; then
-          echo "ERROR: the germline filter would remove ${REMOVED} of ${TOTAL} variants (>50%)." >&2
-          echo "       That is the signature of testing the wrong sample column, not a real" >&2
-          echo "       germline load. normal=${SAMPLES[$NORM_IDX]} idx=${NORM_IDX} qual=${QUAL}" >&2
-          exit 1
-        fi
-        # Copy: the source is either a tarball extraction or another task's output, and
-        # neither may be mutated in place.
-        mkdir -p "${DEST}"
-        cp -r "${SRC}/." "${DEST}/"
-        # The original is kept beside the corrected one under a .prefilter. name.
-        # oncoanalyser resolves the somatic VCF by its exact filename, so the copy is inert.
-        mv "${DEST}/${VCF_NAME}" "${DEST}/${TUMOR}.purple.somatic.prefilter.vcf.gz"
-        if [ -f "${DEST}/${VCF_NAME}.tbi" ]; then
-          mv "${DEST}/${VCF_NAME}.tbi" "${DEST}/${TUMOR}.purple.somatic.prefilter.vcf.gz.tbi"
-        fi
-        bcftools view -e "${GERMLINE_EXPR}" -Oz -o "${DEST}/${VCF_NAME}" "${SRC_VCF}"
-        bcftools index -t -f "${DEST}/${VCF_NAME}"
-        OUT_DIR="${DEST}"
-        # Two different denominators, so say which is which. The table applies this filter
-        # LAST, to whatever survived the others, while the correction applies it alone to
-        # the whole VCF. Printed without explanation the two counts look contradictory.
-        { echo
-          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants from the VCF"
-          if [ -n "${GERMLINE_LOST}" ]; then
-            echo "  of those, ${GERMLINE_LOST} were still in the usable set when the table"
-            echo "  above reached the germline row; the rest had already been dropped by"
-            echo "  the filters above it"
-          fi
-          echo "original retained as ${TUMOR}.purple.somatic.prefilter.vcf.gz"
-        } >> "${REPORT}"
-      else
-        { echo; echo "germline correction: not applied"; } >> "${REPORT}"
-      fi
-      echo "${REMOVED}" > germline_removed.txt
-      echo "${OUT_DIR}" > purple_dir_out.txt
+      # Copy rather than write in place: the source is another task's output or a tarball
+      # extraction, and neither may be mutated.
+      mkdir -p "${DEST}"
+      cp -r "${SRC}/." "${DEST}/"
+      cp "${WORK}/cur.vcf.gz" "${DEST}/${PREFILTERED_NAME}"
+      bcftools index -t -f "${DEST}/${PREFILTERED_NAME}"
+      echo "${DEST}" > purple_dir_out.txt
+
+      { echo
+        echo "sites usable for MRD: ${USABLE} of ${TOTAL}"
+        echo "written as ${PREFILTERED_NAME}, alongside the unmodified ${VCF_NAME}"
+      } >> "${REPORT}"
 
       rm -rf "${WORK}"
       cat "${REPORT}" >&2
-
-      # Signal rather than fail. A non-zero exit would discard every output of this run,
-      # including the report that explains the decision, and would also sink a WG run that
-      # has nothing to do with purity estimation.
-      SUFFICIENT=true
-      if [ "~{min_usable_sites}" -gt 0 ] && [ "${USABLE}" -lt "~{min_usable_sites}" ]; then
-        SUFFICIENT=false
-        echo "NOTE: ${USABLE} usable sites is below min_usable_sites=~{min_usable_sites};" >&2
-        echo "      skipping purity estimation. This primary is unlikely to support a" >&2
-        echo "      reliable MRD assessment." >&2
-        { echo; echo "DECISION: insufficient sites, purity estimation skipped"; } >> "${REPORT}"
-      fi
-      echo "${SUFFICIENT}" > sufficient_sites.txt
     >>>
 
     output {
-        Boolean sufficient_sites = read_boolean("sufficient_sites.txt")
-        Int    usable_sites     = read_int("usable_sites.txt")
+        Int    usable_sites    = read_int("usable_sites.txt")
         Int    germline_removed = read_int("germline_removed.txt")
-        String purple_dir_out   = read_string("purple_dir_out.txt")
-        File   site_report      = "~{outputFileNamePrefix}.primary_site_assessment.txt"
+        String purple_dir_out  = read_string("purple_dir_out.txt")
+        File   site_report     = "~{outputFileNamePrefix}.primary_site_report.txt"
     }
 
     runtime {
@@ -1195,6 +1157,84 @@ task assess_primary_variants {
         timeout: "~{timeout}"
         memory:  "~{memory} GB"
         modules: "~{modules}"
+    }
+}
+
+# Archive the WG results. Separate from run_wgts so it can run AFTER pre_filtering and
+# therefore carry both the original and the prefiltered somatic VCF.
+task pack_wgts {
+    input {
+        String  wgts_dir
+        String  purple_dir
+        String  outputFileNamePrefix
+        Boolean include_germline_outputs
+        Int memory  = 8
+        Int timeout = 4
+    }
+
+    parameter_meta {
+        wgts_dir:                 "The WG output directory, supplying amber/, cobalt/, pave/ and sage/"
+        purple_dir:               "purple/ as written by pre_filtering: the pipeline's own output plus the prefiltered somatic VCF"
+        outputFileNamePrefix:     "Prefix for the archive filename"
+        include_germline_outputs: "Whether to keep germline variant calls in the archive; see the workflow input of the same name"
+        memory:                   "Memory in GB"
+        timeout:                  "Wall-clock timeout in hours"
+    }
+
+    command <<<
+      set -euo pipefail
+      # Stage symlinks and dereference them into the archive, so the WG output is not copied
+      # a second time. alignments/ is excluded on purpose: it holds full REDUX BAMs, and a
+      # chained PE run reads the primary outputs from disk rather than from this archive.
+      stage="$(pwd)/stage"
+      mkdir -p "${stage}"
+
+      # Collect only the directories that exist, so a run that legitimately produces fewer
+      # of them does not fail at the very last step after hours of compute.
+      tar_dirs=()
+      for d in amber cobalt pave sage; do
+        if [ -d "~{wgts_dir}/${d}" ]; then
+          ln -s "~{wgts_dir}/${d}" "${stage}/${d}"
+          tar_dirs+=("${d}/")
+        else
+          echo "note: ${d}/ not present in the output, omitting from the archive" >&2
+        fi
+      done
+      if [ -d "~{purple_dir}" ]; then
+        ln -s "~{purple_dir}" "${stage}/purple"
+        tar_dirs+=("purple/")
+      else
+        echo "note: purple/ not present, omitting from the archive" >&2
+      fi
+      if [ "${#tar_dirs[@]}" -eq 0 ]; then
+        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
+        exit 1
+      fi
+
+      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
+      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
+      # germline calling on and it cannot be switched off from configuration.
+      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files.
+      exclude_args=()
+      if ! ~{include_germline_outputs}; then
+        exclude_args=(--exclude='*germline*')
+      fi
+
+      # -h dereferences the staged symlinks; without it the archive holds four links.
+      tar -czhf ~{outputFileNamePrefix}.wgts.tar.gz \
+          "${exclude_args[@]}" \
+          -C "${stage}" \
+          "${tar_dirs[@]}"
+    >>>
+
+    output {
+        File wgts_tarball = "~{outputFileNamePrefix}.wgts.tar.gz"
+    }
+
+    runtime {
+        cpu:     1
+        timeout: "~{timeout}"
+        memory:  "~{memory} GB"
     }
 }
 
@@ -1262,7 +1302,6 @@ task run_wgts {
         String? normal_sample_id
         String? normal_platform
         Boolean run_redux
-        Boolean include_germline_outputs
         Boolean nextflow_stub
         Boolean allow_mixed_platforms
         String  sequencing_platform
@@ -1291,7 +1330,6 @@ task run_wgts {
         normal_platform:     "Sequencing platform of the normal, used only to refuse a mixed-platform run. oncoanalyser takes one --sequencing_platform per run, and this run processes both samples"
         run_redux:           "When true REDUX processes the alignments; when false the inputs are declared bam_redux with generate_redux_tsvs_only so REDUX only regenerates its TSVs"
         allow_mixed_platforms: "When false, refuse to launch if the samples in this single pipeline run span more than one sequencing platform"
-        include_germline_outputs: "When false, germline calls are excluded from the output archive. See the workflow-level parameter_meta"
         nextflow_stub:       "Run oncoanalyser with -stub --create_stub_placeholders: placeholder outputs, no real compute"
         sequencing_platform: "Value for --sequencing_platform: illumina, sbx or ultima"
         outdir:              "Output directory; the pipeline writes to outdir/group_id/"
@@ -1434,42 +1472,8 @@ task run_wgts {
 
       echo "${abs_outdir}/~{group_id}" > output_dir.txt
 
-      # alignments/ is excluded on purpose: it holds full REDUX BAMs. A chained PE run reads
-      # the primary outputs from disk, not from this tarball.
-      #
-      # Collect only the directories that exist, so a run that legitimately produces fewer
-      # of them (e.g. tumour-only, where nothing germline is written) does not fail at the
-      # very last step after hours of compute.
-      tar_dirs=()
-      for d in amber cobalt purple pave sage; do
-        if [ -d "${abs_outdir}/~{group_id}/${d}" ]; then
-          tar_dirs+=("${d}/")
-        else
-          echo "note: ${d}/ not present in the output, omitting from the tarball" >&2
-        fi
-      done
-      if [ "${#tar_dirs[@]}" -eq 0 ]; then
-        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
-        exit 1
-      fi
-
-      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
-      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
-      # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
-      # be switched off from configuration. Disabling it would need a source patch and would
-      # save very little time, so removing the outputs is the better trade.
-      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
-      # verified against a real archive that nothing else matches it.
-      exclude_args=()
-      if ! ~{include_germline_outputs}; then
-        exclude_args=(--exclude='*germline*')
-      fi
-
-      tar -czf ~{outdir}.wgts.tar.gz \
-          "${exclude_args[@]}" \
-          -C "${abs_outdir}/~{group_id}" \
-          "${tar_dirs[@]}"
-
+      # The WG results are archived by pack_wgts, not here, so that the archive can be built
+      # after pre_filtering and carry the prefiltered somatic VCF alongside the original.
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \
           pipeline_info/
@@ -1477,7 +1481,6 @@ task run_wgts {
 
     output {
         String output_dir             = read_string("output_dir.txt")
-        File   wgts_tarball           = "~{outdir}.wgts.tar.gz"
         File   pipeline_info_tarball  = "~{outdir}.pipeline_info.tar.gz"
     }
 
@@ -1499,6 +1502,7 @@ task run_purity_estimate {
         String  longitudinal_sample_id
         Boolean run_redux
         Boolean nextflow_stub
+        Boolean use_primary_filters
         String  sequencing_platform
         String  primary_purple_dir
         String  outdir
@@ -1524,7 +1528,8 @@ task run_purity_estimate {
         run_redux:              "When true REDUX processes the alignments; when false they are declared bam_redux with generate_redux_tsvs_only so REDUX only regenerates its TSVs"
         nextflow_stub:          "Run oncoanalyser with -stub --create_stub_placeholders: placeholder outputs, no real compute"
         sequencing_platform:    "Value for --sequencing_platform: illumina, sbx or ultima. Taken from the longitudinal sample, the only sample this run processes"
-        primary_purple_dir:     "PURPLE directory of the primary, supplying the variant list SAGE_APPEND works from. Normally the germline-corrected copy from assess_primary_variants"
+        primary_purple_dir:     "PURPLE directory of the primary, holding both the full somatic VCF and the prefiltered one. Which of the two SAGE_APPEND sees is decided by use_primary_filters"
+        use_primary_filters:    "When true, stage the prefiltered somatic VCF under the canonical filename so SAGE_APPEND works from the reduced site list. oncoanalyser resolves that VCF by exact name, which is why this is a staged copy rather than a different path"
         outdir:                 "Output directory; the pipeline writes to outdir/group_id/"
         ref_data_dir:           "HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
         images_dir:             "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR); normally the literal $IMAGES_DIR, expanded by the shell after the oncoanalyser module loads"
@@ -1576,9 +1581,34 @@ task run_purity_estimate {
       #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.
+      # Which of the primary's two somatic VCFs SAGE_APPEND works from. oncoanalyser resolves
+      # it by EXACT filename -- file(purple_dir).resolve("<id>.purple.somatic.vcf.gz") -- so
+      # using the prefiltered one means staging a copy of the directory in which that name
+      # holds the prefiltered content. No filtering happens here; the WG stage wrote both.
+      purple_dir="~{primary_purple_dir}"
+      if ~{use_primary_filters}; then
+        prefiltered="${purple_dir}/~{tumor_sample_id}.purple.somatic.prefiltered.vcf.gz"
+        if [ -s "${prefiltered}" ]; then
+          staged="${WORKDIR}/purple_staged"
+          mkdir -p "${staged}"
+          cp -r "${purple_dir}/." "${staged}/"
+          cp "${prefiltered}" "${staged}/~{tumor_sample_id}.purple.somatic.vcf.gz"
+          if [ -f "${prefiltered}.tbi" ]; then
+            cp "${prefiltered}.tbi" "${staged}/~{tumor_sample_id}.purple.somatic.vcf.gz.tbi"
+          fi
+          purple_dir="${staged}"
+          echo "using the prefiltered primary VCF" >&2
+        else
+          # A WG tarball made before pre-filtering existed has no prefiltered VCF. Warn and
+          # carry on with the full call set rather than failing a run that is still valid.
+          echo "WARNING: no ~{tumor_sample_id}.purple.somatic.prefiltered.vcf.gz in" >&2
+          echo "         ${purple_dir}; using the full call set instead." >&2
+        fi
+      fi
+
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
-        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{primary_purple_dir}"
+        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,${purple_dir}"
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 

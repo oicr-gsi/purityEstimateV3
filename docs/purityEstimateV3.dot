@@ -100,7 +100,8 @@ digraph purityEstimateV3 {
 
     // ------------------------------------------------- loose WDL tasks
     extract [label="extract_wgts\nunpack the tarball,\nderive the primary sample ID"];
-    assess  [label="assess_primary_variants\ncount usable sites per filter,\nstrip germline-supported sites"];
+    prefilt [label="pre_filtering\nprimary filters + germline filter\nwrites *.purple.somatic.prefiltered.vcf.gz\nbeside the untouched original"];
+    pack    [label="pack_wgts\narchive amber/ cobalt/ pave/ sage/\nplus purple/ with BOTH vcfs"];
     collect [label="collect_results\ncombine subject + controls"];
 
     // ---------------------------------------------------------------- outputs
@@ -109,7 +110,7 @@ digraph purityEstimateV3 {
         labeljust=c;
         style="filled,rounded"; fillcolor="#f7f7f7"; color="#cccccc";
         node [shape=note fillcolor="#ffffff" color="#888888"];
-        out_tar  [label="wg_tarball\namber/ cobalt/ purple/ pave/ sage/\nno alignments/, no germline"];
+        out_tar  [label="wg_tarball\namber/ cobalt/ purple/ pave/ sage/\nboth somatic vcfs\nno alignments/, no germline"];
         out_sum  [label="wisp_summary\nSNV_MRD per sample"];
         out_wisp [label="wisp_tarballs\nsubject + controls"];
         out_info [label="pipeline_info\nreport, trace, versions"];
@@ -125,12 +126,14 @@ digraph purityEstimateV3 {
     merge -> wg_redux [lhead=cluster_wg label="  WG, WG_PE\l  tumour + normal\l"];
     merge -> pe_redux [lhead=cluster_pe label="  PE, WG_PE\l  plasma\l"];
 
-    wg_purple -> out_tar [ltail=cluster_wg];
-    extract   -> assess  [label="  PE: purple_dir\l  from the tarball\l"];
-    wg_purple -> assess  [ltail=cluster_wg style=bold
+    wg_purple -> prefilt [ltail=cluster_wg style=bold
                           label="  WG, WG_PE: purple_dir\l  straight off disk\l"];
-    assess    -> pe_sage [lhead=cluster_pe label="  corrected purple_dir"];
-    assess    -> out_rep [style=dashed color="#aaaaaa"];
+    prefilt   -> pack;
+    pack      -> out_tar;
+    prefilt   -> out_rep [style=dashed color="#aaaaaa"];
+
+    extract   -> pe_sage [lhead=cluster_pe label="  PE: purple_dir\l  from the tarball\l"];
+    prefilt   -> pe_sage [lhead=cluster_pe label="  WG_PE: purple_dir\l  use_primary_filters picks\l  which vcf is staged\l"];
 
     pe_wisp -> collect  [ltail=cluster_pe];
     pe_wisp -> out_info [ltail=cluster_pe style=dashed];

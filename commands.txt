@@ -206,22 +206,21 @@ This section lists command(s) run by purityEstimateV3 workflow
       SRC="~{purple_dir}"
       TUMOR="~{tumor_sample_id}"
       VCF_NAME="${TUMOR}.purple.somatic.vcf.gz"
+      PREFILTERED_NAME="${TUMOR}.purple.somatic.prefiltered.vcf.gz"
       SRC_VCF="${SRC}/${VCF_NAME}"
-      DEST="$(pwd)/purple_corrected"
-      REPORT="~{outputFileNamePrefix}.primary_site_assessment.txt"
+      DEST="$(pwd)/purple_prefiltered"
+      REPORT="~{outputFileNamePrefix}.primary_site_report.txt"
       : > "${REPORT}"
 
-      # Anything that stops us assessing is reported and then ignored: an unusable VCF must
-      # not take down a run that would otherwise have produced a result.
+      # Anything that stops us filtering is reported and then ignored: an unusable VCF must
+      # not take down a run that would otherwise have produced a result. The caller falls
+      # back to the unfiltered directory.
       give_up() {
-        echo "NOTE: primary variant assessment skipped: $1" >&2
-        { echo "assessment: SKIPPED"; echo "reason: $1"; } >> "${REPORT}"
+        echo "NOTE: pre-filtering skipped: $1" >&2
+        { echo "prefiltering: SKIPPED"; echo "reason: $1"; } >> "${REPORT}"
         echo "-1" > usable_sites.txt
         echo "0"  > germline_removed.txt
         echo "${SRC}" > purple_dir_out.txt
-        # Unassessable is not the same as insufficient: proceed rather than silently
-        # skipping the analysis on the strength of a count we could not make.
-        echo "true" > sufficient_sites.txt
         exit 0
       }
 
@@ -262,7 +261,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       # has to be an exclude: bcftools cannot negate an indexed FORMAT expression.
       FILTERS=()
       FILTERS+=("PASS|i|FILTER=\"PASS\"")
-      has INFO MAPPABILITY  && FILTERS+=("mappability|i|INFO/MAPPABILITY>0.5")
+      has INFO MAPPABILITY  && FILTERS+=("mappability|i|INFO/MAPPABILITY>=0.5")
       for rf in "${REPC_FIELDS[@]+"${REPC_FIELDS[@]}"}"; do
         FILTERS+=("repeat_${rf}|i|INFO/${rf}<4 || INFO/${rf}==\".\"")
       done
@@ -271,11 +270,6 @@ This section lists command(s) run by purityEstimateV3 workflow
       has INFO NEARBY_INDEL && FILTERS+=("nearby_indel|i|INFO/NEARBY_INDEL=0")
       if has INFO SUBCL && has INFO PURPLE_VCN; then
         FILTERS+=("subclonal|i|INFO/SUBCL<=0.5 || INFO/PURPLE_VCN>=0.7")
-      fi
-      if has FORMAT AED; then
-        FILTERS+=("aed|i|FORMAT/AED[${TUM_IDX}:1] >= 0.06")
-      elif has INFO AED; then
-        FILTERS+=("aed|i|INFO/AED >= 0.06")
       fi
       [ -n "${GERMLINE_EXPR}" ] && FILTERS+=("germline|e|${GERMLINE_EXPR}")
 
@@ -286,6 +280,11 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "normal column:  ${NORM_IDX} (${SAMPLES[$NORM_IDX]})"
         echo "qual field:     ${QUAL:-NONE, germline filter not applied}"
         echo "repeat fields:  ${REPC_FIELDS[*]+"${REPC_FIELDS[*]}"}"
+        echo
+        echo "Two of WISP's conditions are measurements on the cfDNA sample and cannot be"
+        echo "evaluated here: average edge distance (AED[1] >= 0.06) and the quality ratio"
+        echo "(RC_QUAL[0]+[1]+[3])/(RC_CNT[0]+[1]+[3]) >= 18. WISP applies both itself, so the"
+        echo "count below is an upper bound on the sites it will actually use."
         echo
         printf '%-16s %10s %10s\n' "filter" "remaining" "lost"
       } >> "${REPORT}"
@@ -310,72 +309,74 @@ This section lists command(s) run by purityEstimateV3 workflow
         bcftools index -t -f "${WORK}/cur.vcf.gz"
         n=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
         printf '%-16s %10s %10s\n' "${name}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
-        # Kept so the correction can report what this filter cost the USABLE set, which is
-        # a much smaller number than what it removes from the whole VCF.
+
         if [ "${name}" = "germline" ]; then GERMLINE_LOST=$(( PREV - n )); fi
         PREV=${n}
       done
       USABLE=${PREV}
       echo "${USABLE}" > usable_sites.txt
-      { echo; echo "usable sites for MRD: ${USABLE}"; } >> "${REPORT}"
+      echo "${GERMLINE_LOST:-0}" > germline_removed.txt
 
-      REMOVED=0
-      OUT_DIR="${SRC}"
-      if ~{apply_correction} && [ -n "${GERMLINE_EXPR}" ]; then
-        KEPT=$(bcftools view -H -e "${GERMLINE_EXPR}" "${SRC_VCF}" | wc -l)
-        REMOVED=$(( TOTAL - KEPT ))
-        if [ "${TOTAL}" -gt 0 ] && [ $(( REMOVED * 2 )) -gt "${TOTAL}" ]; then
-          echo "ERROR: the germline filter would remove ${REMOVED} of ${TOTAL} variants (>50%)." >&2
-          echo "       That is the signature of testing the wrong sample column, not a real" >&2
-          echo "       germline load. normal=${SAMPLES[$NORM_IDX]} idx=${NORM_IDX} qual=${QUAL}" >&2
-          exit 1
-        fi
-        # Copy: the source is either a tarball extraction or another task's output, and
-        # neither may be mutated in place.
-        mkdir -p "${DEST}"
-        cp -r "${SRC}/." "${DEST}/"
-        # The original is kept beside the corrected one under a .prefilter. name.
-        # oncoanalyser resolves the somatic VCF by its exact filename, so the copy is inert.
-        mv "${DEST}/${VCF_NAME}" "${DEST}/${TUMOR}.purple.somatic.prefilter.vcf.gz"
-        if [ -f "${DEST}/${VCF_NAME}.tbi" ]; then
-          mv "${DEST}/${VCF_NAME}.tbi" "${DEST}/${TUMOR}.purple.somatic.prefilter.vcf.gz.tbi"
-        fi
-        bcftools view -e "${GERMLINE_EXPR}" -Oz -o "${DEST}/${VCF_NAME}" "${SRC_VCF}"
-        bcftools index -t -f "${DEST}/${VCF_NAME}"
-        OUT_DIR="${DEST}"
-        # Two different denominators, so say which is which. The table applies this filter
-        # LAST, to whatever survived the others, while the correction applies it alone to
-        # the whole VCF. Printed without explanation the two counts look contradictory.
-        { echo
-          echo "germline correction: removed ${REMOVED} of ${TOTAL} variants from the VCF"
-          if [ -n "${GERMLINE_LOST}" ]; then
-            echo "  of those, ${GERMLINE_LOST} were still in the usable set when the table"
-            echo "  above reached the germline row; the rest had already been dropped by"
-            echo "  the filters above it"
-          fi
-          echo "original retained as ${TUMOR}.purple.somatic.prefilter.vcf.gz"
-        } >> "${REPORT}"
-      else
-        { echo; echo "germline correction: not applied"; } >> "${REPORT}"
-      fi
-      echo "${REMOVED}" > germline_removed.txt
-      echo "${OUT_DIR}" > purple_dir_out.txt
+      # Copy rather than write in place: the source is another task's output or a tarball
+      # extraction, and neither may be mutated.
+      mkdir -p "${DEST}"
+      cp -r "${SRC}/." "${DEST}/"
+      cp "${WORK}/cur.vcf.gz" "${DEST}/${PREFILTERED_NAME}"
+      bcftools index -t -f "${DEST}/${PREFILTERED_NAME}"
+      echo "${DEST}" > purple_dir_out.txt
+
+      { echo
+        echo "sites usable for MRD: ${USABLE} of ${TOTAL}"
+        echo "written as ${PREFILTERED_NAME}, alongside the unmodified ${VCF_NAME}"
+      } >> "${REPORT}"
 
       rm -rf "${WORK}"
       cat "${REPORT}" >&2
+```
+```
+      set -euo pipefail
+      # Stage symlinks and dereference them into the archive, so the WG output is not copied
+      # a second time. alignments/ is excluded on purpose: it holds full REDUX BAMs, and a
+      # chained PE run reads the primary outputs from disk rather than from this archive.
+      stage="$(pwd)/stage"
+      mkdir -p "${stage}"
 
-      # Signal rather than fail. A non-zero exit would discard every output of this run,
-      # including the report that explains the decision, and would also sink a WG run that
-      # has nothing to do with purity estimation.
-      SUFFICIENT=true
-      if [ "~{min_usable_sites}" -gt 0 ] && [ "${USABLE}" -lt "~{min_usable_sites}" ]; then
-        SUFFICIENT=false
-        echo "NOTE: ${USABLE} usable sites is below min_usable_sites=~{min_usable_sites};" >&2
-        echo "      skipping purity estimation. This primary is unlikely to support a" >&2
-        echo "      reliable MRD assessment." >&2
-        { echo; echo "DECISION: insufficient sites, purity estimation skipped"; } >> "${REPORT}"
+      # Collect only the directories that exist, so a run that legitimately produces fewer
+      # of them does not fail at the very last step after hours of compute.
+      tar_dirs=()
+      for d in amber cobalt pave sage; do
+        if [ -d "~{wgts_dir}/${d}" ]; then
+          ln -s "~{wgts_dir}/${d}" "${stage}/${d}"
+          tar_dirs+=("${d}/")
+        else
+          echo "note: ${d}/ not present in the output, omitting from the archive" >&2
+        fi
+      done
+      if [ -d "~{purple_dir}" ]; then
+        ln -s "~{purple_dir}" "${stage}/purple"
+        tar_dirs+=("purple/")
+      else
+        echo "note: purple/ not present, omitting from the archive" >&2
       fi
-      echo "${SUFFICIENT}" > sufficient_sites.txt
+      if [ "${#tar_dirs[@]}" -eq 0 ]; then
+        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
+        exit 1
+      fi
+
+      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
+      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
+      # germline calling on and it cannot be switched off from configuration.
+      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files.
+      exclude_args=()
+      if ! ~{include_germline_outputs}; then
+        exclude_args=(--exclude='*germline*')
+      fi
+
+      # -h dereferences the staged symlinks; without it the archive holds four links.
+      tar -czhf ~{outputFileNamePrefix}.wgts.tar.gz \
+          "${exclude_args[@]}" \
+          -C "${stage}" \
+          "${tar_dirs[@]}"
 ```
 ```
         set -euo pipefail
@@ -523,42 +524,8 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       echo "${abs_outdir}/~{group_id}" > output_dir.txt
 
-      # alignments/ is excluded on purpose: it holds full REDUX BAMs. A chained PE run reads
-      # the primary outputs from disk, not from this tarball.
-      #
-      # Collect only the directories that exist, so a run that legitimately produces fewer
-      # of them (e.g. tumour-only, where nothing germline is written) does not fail at the
-      # very last step after hours of compute.
-      tar_dirs=()
-      for d in amber cobalt purple pave sage; do
-        if [ -d "${abs_outdir}/~{group_id}/${d}" ]; then
-          tar_dirs+=("${d}/")
-        else
-          echo "note: ${d}/ not present in the output, omitting from the tarball" >&2
-        fi
-      done
-      if [ "${#tar_dirs[@]}" -eq 0 ]; then
-        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
-        exit 1
-      fi
-
-      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
-      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
-      # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
-      # be switched off from configuration. Disabling it would need a source patch and would
-      # save very little time, so removing the outputs is the better trade.
-      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
-      # verified against a real archive that nothing else matches it.
-      exclude_args=()
-      if ! ~{include_germline_outputs}; then
-        exclude_args=(--exclude='*germline*')
-      fi
-
-      tar -czf ~{outdir}.wgts.tar.gz \
-          "${exclude_args[@]}" \
-          -C "${abs_outdir}/~{group_id}" \
-          "${tar_dirs[@]}"
-
+      # The WG results are archived by pack_wgts, not here, so that the archive can be built
+      # after pre_filtering and carry the prefiltered somatic VCF alongside the original.
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \
           pipeline_info/
@@ -601,9 +568,34 @@ This section lists command(s) run by purityEstimateV3 workflow
       #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.
+      # Which of the primary's two somatic VCFs SAGE_APPEND works from. oncoanalyser resolves
+      # it by EXACT filename -- file(purple_dir).resolve("<id>.purple.somatic.vcf.gz") -- so
+      # using the prefiltered one means staging a copy of the directory in which that name
+      # holds the prefiltered content. No filtering happens here; the WG stage wrote both.
+      purple_dir="~{primary_purple_dir}"
+      if ~{use_primary_filters}; then
+        prefiltered="${purple_dir}/~{tumor_sample_id}.purple.somatic.prefiltered.vcf.gz"
+        if [ -s "${prefiltered}" ]; then
+          staged="${WORKDIR}/purple_staged"
+          mkdir -p "${staged}"
+          cp -r "${purple_dir}/." "${staged}/"
+          cp "${prefiltered}" "${staged}/~{tumor_sample_id}.purple.somatic.vcf.gz"
+          if [ -f "${prefiltered}.tbi" ]; then
+            cp "${prefiltered}.tbi" "${staged}/~{tumor_sample_id}.purple.somatic.vcf.gz.tbi"
+          fi
+          purple_dir="${staged}"
+          echo "using the prefiltered primary VCF" >&2
+        else
+          # A WG tarball made before pre-filtering existed has no prefiltered VCF. Warn and
+          # carry on with the full call set rather than failing a run that is still valid.
+          echo "WARNING: no ~{tumor_sample_id}.purple.somatic.prefiltered.vcf.gz in" >&2
+          echo "         ${purple_dir}; using the full call set instead." >&2
+        fi
+      fi
+
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
-        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{primary_purple_dir}"
+        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,${purple_dir}"
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 

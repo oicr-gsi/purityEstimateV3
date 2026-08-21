@@ -9,49 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pre_filtering`, which filters the primary's somatic VCF in WG and WG_PE mode and reports
   what each filter cost. Two filter sets, both primary-side: the **primary filters** WISP
   uses to decide which sites can carry MRD signal (mappability, repeat count, SNV only,
-  tier, nearby indel, subclonal), and the **germline filter** WISP
-  documents but never applies, because oncoanalyser does not pass the reference sample id
-  through and WISP therefore has no genotype to test.
+  tier, nearby indel, subclonal), and the **germline filter** which WISP
+  documents but never applies.
   The result is written as `<sample>.purple.somatic.prefiltered.vcf.gz` **beside the
-  untouched original**, and both go into the WG archive. A reader of that archive therefore
-  sees the full call set and the MRD-usable subset, which is what a clinical report needs in
-  order to say whether a plasma sample is worth taking.
-  Only the PASS step drops records. Every condition after it SOFT-FLAGS, adding its name to
-  the VCF FILTER column, so the prefiltered VCF is self-describing: it says per site which
-  conditions failed rather than silently omitting the site, and `FILTER="PASS"` selects the
-  usable subset. That is also what WISP does with whatever VCF it is handed, so handing this
-  file to the plasma stage yields the same site set as hard filtering would.
-  Note that WISP applies the primary filters itself, on whatever sites it is given, and
-  records the reason per site. The prefiltered VCF is a deliverable, not a correction; only
-  the germline filter changes what WISP can see.
-  Two of WISP's conditions are measurements on the cfDNA sample and so cannot be applied to
-  the primary at all: average edge distance (`AED[1] >= 0.06`) and the quality ratio
-  `(RC_QUAL[0]+[1]+[3])/(RC_CNT[0]+[1]+[3]) >= 18`. WISP applies both itself, so the reported
-  count is an upper bound on the sites it will actually use, and the report says so.
-- `primary_site_report`, the per-filter table: how many candidate sites survive each filter
-  in turn, and the final count usable for MRD.
+  untouched original**, and both go into the WG archive. Only the PASS step drops records;
+  the rest add their name to the VCF FILTER column, so `FILTER="PASS"` selects the usable
+  sites.
 - `use_primary_filters`. In PE and WG_PE mode this chooses whether the plasma stage works
   from the prefiltered VCF or the full call set; no filtering happens in the PE stage.
-  oncoanalyser resolves the somatic VCF by exact filename, so using the prefiltered one means
-  staging a copy of the PURPLE directory in which that name holds the prefiltered content.
-  That staging is done in `run_purity_estimate`, beside the samplesheet it feeds. A WG tarball
-  produced before pre-filtering existed contains no prefiltered VCF; the run falls back to
-  the full call set with a warning rather than failing.
 - `pack_wgts`, which archives the WG results. Split out of `run_wgts` so that it runs after
   `pre_filtering` and can therefore carry both somatic VCFs. It stages symlinks and
   dereferences them into the archive, so the WG output is not copied a second time.
-
-### Changed
-- `run_purity_estimate` takes `primary_purple_dir` in place of `wgts_outdir`: the PURPLE
-  directory itself rather than its parent, so a staged copy can be substituted.
-- Comments and `parameter_meta` no longer carry measured numbers or past error strings.
-
-### Removed
-- `min_usable_sites`. The workflow does not decide whether purity estimation is worth
-  running; that is a clinical decision taken from the WG deliverable. The site counts are
-  still reported, they just do not gate anything.
-- `apply_germline_correction`. Both filter sets always run in WG mode. What used to be
-  optional is now the `use_primary_filters` choice on the PE side.
 
 ## [1.0.0] - 2026-08-10
 ### Added

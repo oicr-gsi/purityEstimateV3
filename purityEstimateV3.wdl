@@ -975,9 +975,20 @@ task extract_wgts {
 #
 #   PRIMARY FILTERS   the criteria WISP uses to decide which sites can carry MRD signal:
 #                     mappability, repeat count, SNV only, tier, nearby indel, subclonal.
-#                     Two of WISP's conditions are missing on purpose: average edge distance
-#                     and the quality ratio are measured on the cfDNA sample, so they cannot
-#                     be evaluated on the primary. WISP applies both itself.
+#
+#                     Two of WISP's ten conditions are missing ON PURPOSE, because both are
+#                     measured on the ctDNA sample: the high-confidence check
+#                     (RC_QUAL/RC_CNT >= 18) and average edge distance (AED[1] >= 0.06).
+#                     WISP evaluates them on the cfDNA-annotated VCF, which only exists after
+#                     SAGE_APPEND, and applies both itself.
+#
+#                     AED is a trap worth naming. It is a FORMAT field, so it HAS a value on
+#                     the primary (Number=2, "[alt,total]"), and FORMAT/AED[<tumour>:1] >= 0.06
+#                     runs happily while removing almost nothing -- because the tumour's edge
+#                     distance is not the quantity the condition means. In WISP's own per-site
+#                     output the equivalent column is zero at every site with no plasma alt
+#                     read, which is what settles it. A field being present is not the same as
+#                     the condition being applicable.
 #   GERMLINE FILTER   sites with support in the matched normal. WISP documents this one but
 #                     never applies it, because oncoanalyser does not pass the reference
 #                     sample id through and WISP therefore has no genotype to test.

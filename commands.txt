@@ -44,6 +44,16 @@ This section lists command(s) run by purityEstimateV3 workflow
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
 
+      case "~{scheduler}" in
+        sge) ;;
+        slurm)
+          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
+          ~{if has_nextflow_config then "true" else "false"} || \
+            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+          ;;
+        *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
+      esac
+
       if [ "${#errors[@]}" -gt 0 ]; then
         echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
         for e in "${errors[@]}"; do
@@ -516,11 +526,25 @@ This section lists command(s) run by purityEstimateV3 workflow
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
-      bin_dir="$(pwd)/bin"
-      mkdir -p "${bin_dir}"
-      cp ~{submit_wrapper} "${bin_dir}/qsub"
-      chmod +x "${bin_dir}/qsub"
-      export PATH="${bin_dir}:$PATH"
+      # The SGE executor embeds h_rss/mem_free directly in .command.run, where configuration
+      # cannot reach them, so a shim ahead of qsub on PATH rewrites the request. The Slurm
+      # executor emits --mem and --cpus-per-task from the memory and cpus directives, so it
+      # needs no wrapper.
+      if [ "~{scheduler}" = "sge" ]; then
+        bin_dir="$(pwd)/bin"
+        mkdir -p "${bin_dir}"
+        cp ~{submit_wrapper} "${bin_dir}/qsub"
+        chmod +x "${bin_dir}/qsub"
+        export PATH="${bin_dir}:$PATH"
+      fi
+
+      # One -c per overlay, in the order given: later files win, which is how a site config
+      # overrides the shared one.
+      configs=(~{sep=" " nextflow_config})
+      config_args=()
+      for cfg in "${configs[@]}"; do
+        config_args+=(-c "${cfg}")
+      done
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
@@ -539,7 +563,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{site_config} \
+          "${config_args[@]}" \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume
@@ -662,11 +686,25 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_HOME="${nxf_home_rw}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
-      bin_dir="$(pwd)/bin"
-      mkdir -p "${bin_dir}"
-      cp ~{submit_wrapper} "${bin_dir}/qsub"
-      chmod +x "${bin_dir}/qsub"
-      export PATH="${bin_dir}:$PATH"
+      # The SGE executor embeds h_rss/mem_free directly in .command.run, where configuration
+      # cannot reach them, so a shim ahead of qsub on PATH rewrites the request. The Slurm
+      # executor emits --mem and --cpus-per-task from the memory and cpus directives, so it
+      # needs no wrapper.
+      if [ "~{scheduler}" = "sge" ]; then
+        bin_dir="$(pwd)/bin"
+        mkdir -p "${bin_dir}"
+        cp ~{submit_wrapper} "${bin_dir}/qsub"
+        chmod +x "${bin_dir}/qsub"
+        export PATH="${bin_dir}:$PATH"
+      fi
+
+      # One -c per overlay, in the order given: later files win, which is how a site config
+      # overrides the shared one.
+      configs=(~{sep=" " nextflow_config})
+      config_args=()
+      for cfg in "${configs[@]}"; do
+        config_args+=(-c "${cfg}")
+      done
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
@@ -686,7 +724,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{site_config} \
+          "${config_args[@]}" \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume

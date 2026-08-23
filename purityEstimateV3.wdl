@@ -55,6 +55,8 @@ workflow purityEstimateV3 {
         Boolean       allow_mixed_platforms = false  # production guardrail; see parameter_meta
         Boolean       use_primary_filters = true  # PE mode; see parameter_meta
         Boolean       nextflow_stub = false   # run oncoanalyser with -stub; see parameter_meta
+        String        scheduler = "sge"       # "sge" or "slurm"; see parameter_meta
+        Array[String]? nextflow_config        # null = the module's config for `scheduler`
         String        modules = "java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"
     }
 
@@ -75,6 +77,8 @@ workflow purityEstimateV3 {
         include_germline_outputs: "Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work"
         allow_mixed_platforms:  "Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning"
         use_primary_filters:    "PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing"
+        scheduler:              "Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper"
+        nextflow_config:        "Config overlays passed to nextflow, each with its own -c, in order. Leave null on SGE to use the overlay the oncoanalyser module ships. A site whose scheduler differs must supply its own, because that overlay sets the executor; split it so the settings that hold everywhere (genome paths, container overrides, per-process resources) stay in one file and only the executor and filesystem binds are per-site"
         nextflow_stub:          "When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run"
         modules:                "Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step"
     }
@@ -90,7 +94,9 @@ workflow purityEstimateV3 {
     String images_dir     = "$IMAGES_DIR"
     String pipeline_dir   = "$ONCOANALYSER_FOLDER"
     String nextflow_home  = "$NEXTFLOW_HOME"
-    String site_config    = "$ONCOANALYSER_OICR_CONFIG"
+    # The module ships an overlay for this site's scheduler only, so a different scheduler
+    # has to bring its own; validate_inputs enforces that.
+    Array[String] site_configs = select_first([nextflow_config, ["$ONCOANALYSER_OICR_CONFIG"]])
     String submit_wrapper = "$QSUB_WRAPPER"
 
     # Nextflow comes from PATH; the pipeline module supplies it and pins the version. The
@@ -123,7 +129,9 @@ workflow purityEstimateV3 {
             has_wgts_tarball    = defined(wgts_tarball),
             has_tumor_sample_id = defined(tumor_sample_id),
             run_control         = run_control,
-            has_controls        = defined(controls)
+            has_controls        = defined(controls),
+            scheduler           = scheduler,
+            has_nextflow_config = defined(nextflow_config)
     }
 
     # Read sample ID and platform from one header per sample. Cheap: the header is read
@@ -334,7 +342,8 @@ workflow purityEstimateV3 {
                 pipeline_dir        = pipeline_dir,
                 nextflow_bin        = nextflow_bin,
                 nextflow_home       = nextflow_home,
-                site_config         = site_config,
+                scheduler           = scheduler,
+                nextflow_config     = site_configs,
                 submit_wrapper        = submit_wrapper,
                 modules             = modules
         }
@@ -401,7 +410,8 @@ workflow purityEstimateV3 {
                 pipeline_dir           = pipeline_dir,
                 nextflow_bin           = nextflow_bin,
                 nextflow_home          = nextflow_home,
-                site_config            = site_config,
+                scheduler              = scheduler,
+                nextflow_config        = site_configs,
                 submit_wrapper           = submit_wrapper,
                 modules                = modules
         }
@@ -431,7 +441,8 @@ workflow purityEstimateV3 {
                         pipeline_dir           = pipeline_dir,
                         nextflow_bin           = nextflow_bin,
                         nextflow_home          = nextflow_home,
-                        site_config            = site_config,
+                        scheduler              = scheduler,
+                        nextflow_config        = site_configs,
                         submit_wrapper           = submit_wrapper,
                         modules                = modules
                 }
@@ -523,6 +534,8 @@ task validate_inputs {
         Boolean has_tumor_sample_id
         Boolean run_control
         Boolean has_controls
+        String  scheduler
+        Boolean has_nextflow_config
         Int memory  = 1
         Int timeout = 1
     }
@@ -536,6 +549,8 @@ task validate_inputs {
         has_tumor_sample_id: "Whether tumor_sample_id was supplied"
         run_control:         "Whether control purity estimation was requested"
         has_controls:        "Whether the controls array was supplied"
+        scheduler:           "Requested batch scheduler"
+        has_nextflow_config: "Whether nextflow_config was supplied"
         memory:              "Memory in GB"
         timeout:             "Wall-clock timeout in hours"
     }
@@ -580,6 +595,16 @@ task validate_inputs {
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
+
+      case "~{scheduler}" in
+        sge) ;;
+        slurm)
+          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
+          ~{if has_nextflow_config then "true" else "false"} || \
+            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+          ;;
+        *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
+      esac
 
       if [ "${#errors[@]}" -gt 0 ]; then
         echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
@@ -1342,7 +1367,8 @@ task run_wgts {
         String  pipeline_dir
         String  nextflow_bin
         String  nextflow_home
-        String  site_config
+        String  scheduler
+        Array[String] nextflow_config
         String  submit_wrapper
         String  modules
         Int memory  = 32
@@ -1369,7 +1395,8 @@ task run_wgts {
         pipeline_dir:        "oncoanalyser checkout containing main.nf; normally the literal $ONCOANALYSER_FOLDER"
         nextflow_bin:        "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
         nextflow_home:       "NXF_HOME holding the pre-cached nf-schema plugin, so the run works with NXF_OFFLINE=true"
-        site_config:         "Site config overlay passed to nextflow with -c: executor settings, container overrides, and unused reference paths nulled out"
+        scheduler:       "Batch scheduler Nextflow submits to; the submit wrapper is installed only for sge"
+        nextflow_config:   "Config overlays, each passed with its own -c, in the order given"
         submit_wrapper:      "Wrapper placed on PATH ahead of the scheduler submit command, to adjust the resource requests Nextflow generates"
         modules:             "Environment modules to load"
         memory:              "Memory in GB for this task, which hosts the Nextflow driver only; the pipeline processes get their own allocations"
@@ -1481,11 +1508,25 @@ task run_wgts {
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
-      bin_dir="$(pwd)/bin"
-      mkdir -p "${bin_dir}"
-      cp ~{submit_wrapper} "${bin_dir}/qsub"
-      chmod +x "${bin_dir}/qsub"
-      export PATH="${bin_dir}:$PATH"
+      # The SGE executor embeds h_rss/mem_free directly in .command.run, where configuration
+      # cannot reach them, so a shim ahead of qsub on PATH rewrites the request. The Slurm
+      # executor emits --mem and --cpus-per-task from the memory and cpus directives, so it
+      # needs no wrapper.
+      if [ "~{scheduler}" = "sge" ]; then
+        bin_dir="$(pwd)/bin"
+        mkdir -p "${bin_dir}"
+        cp ~{submit_wrapper} "${bin_dir}/qsub"
+        chmod +x "${bin_dir}/qsub"
+        export PATH="${bin_dir}:$PATH"
+      fi
+
+      # One -c per overlay, in the order given: later files win, which is how a site config
+      # overrides the shared one.
+      configs=(~{sep=" " nextflow_config})
+      config_args=()
+      for cfg in "${configs[@]}"; do
+        config_args+=(-c "${cfg}")
+      done
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
@@ -1504,7 +1545,7 @@ task run_wgts {
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{site_config} \
+          "${config_args[@]}" \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume
@@ -1550,7 +1591,8 @@ task run_purity_estimate {
         String  pipeline_dir
         String  nextflow_bin
         String  nextflow_home
-        String  site_config
+        String  scheduler
+        Array[String] nextflow_config
         String  submit_wrapper
         String  modules
         Int memory  = 32
@@ -1575,7 +1617,8 @@ task run_purity_estimate {
         pipeline_dir:           "oncoanalyser checkout containing main.nf; normally the literal $ONCOANALYSER_FOLDER"
         nextflow_bin:           "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
         nextflow_home:          "NXF_HOME holding the pre-cached nf-schema plugin, so the run works with NXF_OFFLINE=true"
-        site_config:            "Site config overlay passed to nextflow with -c: executor settings, container overrides, and unused reference paths nulled out"
+        scheduler:          "Batch scheduler Nextflow submits to; the submit wrapper is installed only for sge"
+        nextflow_config:      "Config overlays, each passed with its own -c, in the order given"
         submit_wrapper:         "Wrapper placed on PATH ahead of the scheduler submit command, to adjust the resource requests Nextflow generates"
         modules:                "Environment modules to load"
         memory:                 "Memory in GB for this task, which hosts the Nextflow driver only; the pipeline processes get their own allocations"
@@ -1692,11 +1735,25 @@ task run_purity_estimate {
       export NXF_HOME="${nxf_home_rw}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
-      bin_dir="$(pwd)/bin"
-      mkdir -p "${bin_dir}"
-      cp ~{submit_wrapper} "${bin_dir}/qsub"
-      chmod +x "${bin_dir}/qsub"
-      export PATH="${bin_dir}:$PATH"
+      # The SGE executor embeds h_rss/mem_free directly in .command.run, where configuration
+      # cannot reach them, so a shim ahead of qsub on PATH rewrites the request. The Slurm
+      # executor emits --mem and --cpus-per-task from the memory and cpus directives, so it
+      # needs no wrapper.
+      if [ "~{scheduler}" = "sge" ]; then
+        bin_dir="$(pwd)/bin"
+        mkdir -p "${bin_dir}"
+        cp ~{submit_wrapper} "${bin_dir}/qsub"
+        chmod +x "${bin_dir}/qsub"
+        export PATH="${bin_dir}:$PATH"
+      fi
+
+      # One -c per overlay, in the order given: later files win, which is how a site config
+      # overrides the shared one.
+      configs=(~{sep=" " nextflow_config})
+      config_args=()
+      for cfg in "${configs[@]}"; do
+        config_args+=(-c "${cfg}")
+      done
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
@@ -1716,7 +1773,7 @@ task run_purity_estimate {
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{site_config} \
+          "${config_args[@]}" \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume

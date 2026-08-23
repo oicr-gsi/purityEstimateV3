@@ -3,6 +3,8 @@
         "arguments": {
             "purityEstimateV3.allow_mixed_platforms": null,
             "purityEstimateV3.use_primary_filters": null,
+            "purityEstimateV3.scheduler": null,
+            "purityEstimateV3.nextflow_config": null,
             "purityEstimateV3.pre_filtering.memory": null,
             "purityEstimateV3.pre_filtering.modules": null,
             "purityEstimateV3.pre_filtering.timeout": null,
@@ -276,6 +278,8 @@
         "arguments": {
             "purityEstimateV3.allow_mixed_platforms": null,
             "purityEstimateV3.use_primary_filters": null,
+            "purityEstimateV3.scheduler": null,
+            "purityEstimateV3.nextflow_config": null,
             "purityEstimateV3.pre_filtering.memory": null,
             "purityEstimateV3.pre_filtering.modules": null,
             "purityEstimateV3.pre_filtering.timeout": null,
@@ -481,6 +485,8 @@
         "arguments": {
             "purityEstimateV3.allow_mixed_platforms": null,
             "purityEstimateV3.use_primary_filters": null,
+            "purityEstimateV3.scheduler": null,
+            "purityEstimateV3.nextflow_config": null,
             "purityEstimateV3.pre_filtering.memory": null,
             "purityEstimateV3.pre_filtering.modules": null,
             "purityEstimateV3.pre_filtering.timeout": null,

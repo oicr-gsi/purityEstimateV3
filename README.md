@@ -101,6 +101,18 @@ Parameter|Value|Default|Description
 `longitudinal_info.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `longitudinal_info.memory`|Int|4|Memory in GB
 `longitudinal_info.timeout`|Int|1|Wall-clock timeout in hours
+`probe_tumor.records`|Int|100000|How many leading records to inspect
+`probe_tumor.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`probe_tumor.memory`|Int|4|Memory in GB
+`probe_tumor.timeout`|Int|1|Wall-clock timeout in hours
+`probe_normal.records`|Int|100000|How many leading records to inspect
+`probe_normal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`probe_normal.memory`|Int|4|Memory in GB
+`probe_normal.timeout`|Int|1|Wall-clock timeout in hours
+`probe_longitudinal.records`|Int|100000|How many leading records to inspect
+`probe_longitudinal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
+`probe_longitudinal.memory`|Int|4|Memory in GB
+`probe_longitudinal.timeout`|Int|1|Wall-clock timeout in hours
 `cram_tumor.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_tumor.threads`|Int|8|Number of samtools threads
 `cram_tumor.memory`|Int|16|Memory in GB
@@ -113,7 +125,6 @@ Parameter|Value|Default|Description
 `fixmate_tumor_disc.threads`|Int|4|Number of samtools threads
 `fixmate_tumor_disc.memory`|Int|16|Memory in GB
 `fixmate_tumor_disc.timeout`|Int|3|Wall-clock timeout in hours
-`merge_tumor_fixmate.expect_mc_tags`|Boolean|false|Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them
 `merge_tumor_fixmate.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_tumor_fixmate.threads`|Int|8|Number of samtools threads
 `merge_tumor_fixmate.memory`|Int|16|Memory in GB
@@ -135,7 +146,6 @@ Parameter|Value|Default|Description
 `fixmate_normal_disc.threads`|Int|4|Number of samtools threads
 `fixmate_normal_disc.memory`|Int|16|Memory in GB
 `fixmate_normal_disc.timeout`|Int|3|Wall-clock timeout in hours
-`merge_normal_fixmate.expect_mc_tags`|Boolean|false|Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them
 `merge_normal_fixmate.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_normal_fixmate.threads`|Int|8|Number of samtools threads
 `merge_normal_fixmate.memory`|Int|16|Memory in GB
@@ -157,7 +167,6 @@ Parameter|Value|Default|Description
 `fixmate_longitudinal_disc.threads`|Int|4|Number of samtools threads
 `fixmate_longitudinal_disc.memory`|Int|16|Memory in GB
 `fixmate_longitudinal_disc.timeout`|Int|3|Wall-clock timeout in hours
-`merge_longitudinal_fixmate.expect_mc_tags`|Boolean|false|Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them
 `merge_longitudinal_fixmate.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_longitudinal_fixmate.threads`|Int|8|Number of samtools threads
 `merge_longitudinal_fixmate.memory`|Int|16|Memory in GB
@@ -311,6 +320,21 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
 ```
       set -euo pipefail
+      # head closes the pipe, and grep -c exits 1 when it matches nothing, so neither can be
+      # allowed to fail the task.
+      set +o pipefail
+      n=$(samtools view "~{bam}" | head -~{records} | grep -c 'MC:Z:' || true)
+      set -o pipefail
+      if [ "${n}" -gt 0 ]; then
+        echo "true" > has_mc_tags.txt
+        echo "mate CIGAR tags present (${n} in the first ~{records} records)" >&2
+      else
+        echo "false" > has_mc_tags.txt
+        echo "no mate CIGAR tags in the first ~{records} records" >&2
+      fi
+```
+```
+      set -euo pipefail
       # Symlink BAM and BAI preserving the original filenames so samtools can
       # locate the index automatically (it derives the index path from the BAM
       # path; renaming would break that lookup).
@@ -341,22 +365,6 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
       set -euo pipefail
       bam_list=(~{sep=" " bams})
-
-      # Skipping fixmate is a claim about the data, and if it is wrong REDUX marks duplicates
-      # incorrectly and reports nothing. Check the claim instead of trusting it.
-      if ~{expect_mc_tags}; then
-        set +o pipefail   # head closes the pipe, and grep -c exits 1 when it matches nothing
-        mc_count=$(samtools view "${bam_list[0]}" | head -100000 | grep -c 'MC:Z:' || true)
-        set -o pipefail
-        if [ "${mc_count}" -eq 0 ]; then
-          echo "ERROR: no MC:Z tags in the first 100000 records of" >&2
-          echo "       $(basename "${bam_list[0]}"), but fixmate was skipped. REDUX needs mate" >&2
-          echo "       CIGAR tags to mark duplicates correctly and will otherwise do so" >&2
-          echo "       silently wrong. Set doFixmate=true for these alignments." >&2
-          exit 1
-        fi
-        echo "mate CIGAR tags present (${mc_count} in the first 100000 records)" >&2
-      fi
 
       # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
       # and because the header line is itself tab-delimited those become extra fields --

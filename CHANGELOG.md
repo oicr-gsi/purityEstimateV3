@@ -12,8 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps its provenance. `sanitize_header` is replaced by `repair_flags` (the unpaired-flag
   repair that only the fixmate path needs) and `strip_bad_pg` (run the check at all), which
   were previously conflated.
-- `doFixmate = false` is verified against the data. `merge_bams` fails if the alignments carry
-  no `MC:Z` tags, rather than letting REDUX mark duplicates silently wrong.
+- `probe_mc_tags`, which decides whether fixmate is needed from the alignments rather than
+  from the input alone. `doFixmate = false` is honoured when the tags are really present; when
+  they are not, fixmate runs anyway with a warning, rather than letting REDUX mark duplicates
+  silently wrong. `doFixmate = true` always fixmates, so the probe only runs when its answer
+  can change the decision.
 - `doFixmate`. Consulted only when `run_redux` is true and the sample is Illumina: leave it
   true for alignments that lack mate CIGAR tags, set it false when the aligner already wrote
   them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter. The inputs are still

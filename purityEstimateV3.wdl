@@ -164,15 +164,48 @@ workflow purityEstimateV3 {
     # detection, for data with a missing or wrong PL tag.
     if (defined(tumor_alignments)) {
         String tumor_platform  = select_first([sequencing_platform, tumor_info.platform])
-        Boolean tumor_fixmate  = run_redux && doFixmate && tumor_platform == "illumina"
+        # Only probe when the answer can change the decision: doFixmate=true always
+        # fixmates, and a non-Illumina sample never does.
+        if (run_redux && !doFixmate && tumor_platform == "illumina") {
+            call probe_mc_tags as probe_tumor {
+                input: bam = select_first([tumor_alignments])[0].aln
+            }
+        }
+        # Correct only the dangerous direction. Skipping fixmate is honoured when the tags
+        # are really there; when they are not, fixmate runs anyway rather than letting
+        # REDUX mis-mark duplicates.
+        Boolean tumor_fixmate = run_redux && tumor_platform == "illumina"
+                                 && (doFixmate || !select_first([probe_tumor.has_mc_tags, true]))
     }
     if (defined(normal_alignments)) {
         String normal_platform = select_first([sequencing_platform, normal_info.platform])
-        Boolean normal_fixmate = run_redux && doFixmate && normal_platform == "illumina"
+        # Only probe when the answer can change the decision: doFixmate=true always
+        # fixmates, and a non-Illumina sample never does.
+        if (run_redux && !doFixmate && normal_platform == "illumina") {
+            call probe_mc_tags as probe_normal {
+                input: bam = select_first([normal_alignments])[0].aln
+            }
+        }
+        # Correct only the dangerous direction. Skipping fixmate is honoured when the tags
+        # are really there; when they are not, fixmate runs anyway rather than letting
+        # REDUX mis-mark duplicates.
+        Boolean normal_fixmate = run_redux && normal_platform == "illumina"
+                                 && (doFixmate || !select_first([probe_normal.has_mc_tags, true]))
     }
     if (defined(longitudinal_alignments)) {
         String longitudinal_platform = select_first([sequencing_platform, longitudinal_info.platform])
-        Boolean longitudinal_fixmate = run_redux && doFixmate && longitudinal_platform == "illumina"
+        # Only probe when the answer can change the decision: doFixmate=true always
+        # fixmates, and a non-Illumina sample never does.
+        if (run_redux && !doFixmate && longitudinal_platform == "illumina") {
+            call probe_mc_tags as probe_longitudinal {
+                input: bam = select_first([longitudinal_alignments])[0].aln
+            }
+        }
+        # Correct only the dangerous direction. Skipping fixmate is honoured when the tags
+        # are really there; when they are not, fixmate runs anyway rather than letting
+        # REDUX mis-mark duplicates.
+        Boolean longitudinal_fixmate = run_redux && longitudinal_platform == "illumina"
+                                 && (doFixmate || !select_first([probe_longitudinal.has_mc_tags, true]))
     }
 
     # The tumour sample ID is resolved per mode, NOT here. A workflow-level declaration is
@@ -227,8 +260,7 @@ workflow purityEstimateV3 {
                 input:
                     bams = tumor_staged_bam,
                     bais = tumor_staged_bai,
-                    strip_bad_pg   = run_redux,
-                    expect_mc_tags = run_redux && !doFixmate && tumor_platform == "illumina"
+                    strip_bad_pg   = run_redux
             }
         }
 
@@ -272,8 +304,7 @@ workflow purityEstimateV3 {
                 input:
                     bams = normal_staged_bam,
                     bais = normal_staged_bai,
-                    strip_bad_pg   = run_redux,
-                    expect_mc_tags = run_redux && !doFixmate && normal_platform == "illumina"
+                    strip_bad_pg   = run_redux
             }
         }
 
@@ -317,8 +348,7 @@ workflow purityEstimateV3 {
                 input:
                     bams = longitudinal_staged_bam,
                     bais = longitudinal_staged_bai,
-                    strip_bad_pg   = run_redux,
-                    expect_mc_tags = run_redux && !doFixmate && longitudinal_platform == "illumina"
+                    strip_bad_pg   = run_redux
             }
         }
 
@@ -763,6 +793,60 @@ task cram_to_bam {
     }
 }
 
+# Does this alignment already carry mate CIGAR tags?
+#
+# REDUX needs MC tags to mark duplicates correctly, and fixmate is how they get there. Some
+# aligners write them already, in which case the per-chromosome fixmate scatter is pure cost.
+# Deciding that from the data rather than from an input means doFixmate=false cannot silently
+# hand REDUX an alignment it will mis-process.
+#
+# Reads records rather than the header, so a bounded slice is used: MC is per-read, and the
+# question is whether the writer emits it at all, which the first records answer.
+task probe_mc_tags {
+    input {
+        File   bam
+        Int    records = 100000
+        String modules = "samtools/1.16.1"
+        Int memory  = 4
+        Int timeout = 1
+    }
+
+    parameter_meta {
+        bam:     "Alignment to inspect. Always a BAM, because the probe is only reached for platforms that get fixmate, and those inputs are BAMs; so no reference is needed to read records"
+        records: "How many leading records to inspect"
+        modules: "Environment modules to load (samtools required)"
+        memory:  "Memory in GB"
+        timeout: "Wall-clock timeout in hours"
+    }
+
+    command <<<
+      set -euo pipefail
+      # head closes the pipe, and grep -c exits 1 when it matches nothing, so neither can be
+      # allowed to fail the task.
+      set +o pipefail
+      n=$(samtools view "~{bam}" | head -~{records} | grep -c 'MC:Z:' || true)
+      set -o pipefail
+      if [ "${n}" -gt 0 ]; then
+        echo "true" > has_mc_tags.txt
+        echo "mate CIGAR tags present (${n} in the first ~{records} records)" >&2
+      else
+        echo "false" > has_mc_tags.txt
+        echo "no mate CIGAR tags in the first ~{records} records" >&2
+      fi
+    >>>
+
+    output {
+        Boolean has_mc_tags = read_boolean("has_mc_tags.txt")
+    }
+
+    runtime {
+        cpu:     1
+        timeout: "~{timeout}"
+        memory:  "~{memory} GB"
+        modules: modules
+    }
+}
+
 # Add mate CIGAR (MC) tags to one chromosome slice of one lane BAM.
 # Handles concordant pairs only (RNEXT == "="); discordant pairs are handled
 # by fixmate_discordant, which runs in parallel on the same lane BAM.
@@ -874,15 +958,12 @@ task fixmate_discordant {
 #   strip_bad_pg     set when the output feeds REDUX, i.e. htsjdk. An @PG line is only
 #                    stripped if it is ACTUALLY malformed, so a well-formed header keeps its
 #                    provenance; see the detection in the command.
-#   expect_mc_tags   assert that mate CIGAR tags are already present, for the case where
-#                    fixmate was deliberately skipped.
 task merge_bams {
     input {
         Array[File] bams
         Array[File] bais
         Boolean     repair_flags = false
         Boolean     strip_bad_pg = false
-        Boolean     expect_mc_tags = false
         String      modules = "samtools/1.16.1"
         Int threads = 8
         Int memory  = 16
@@ -894,7 +975,6 @@ task merge_bams {
         bais:           "Index files corresponding to each entry in bams (same order)"
         repair_flags:   "Repair reads whose paired flag was cleared while the first/second-in-pair flags were left set. Needed only after per-chromosome fixmate"
         strip_bad_pg:   "Check the @PG header and strip it if malformed. Set when the output feeds REDUX; a well-formed header is left alone"
-        expect_mc_tags: "Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them"
         modules:        "Environment modules to load (samtools required)"
         threads:        "Number of samtools threads"
         memory:         "Memory in GB"
@@ -904,22 +984,6 @@ task merge_bams {
     command <<<
       set -euo pipefail
       bam_list=(~{sep=" " bams})
-
-      # Skipping fixmate is a claim about the data, and if it is wrong REDUX marks duplicates
-      # incorrectly and reports nothing. Check the claim instead of trusting it.
-      if ~{expect_mc_tags}; then
-        set +o pipefail   # head closes the pipe, and grep -c exits 1 when it matches nothing
-        mc_count=$(samtools view "${bam_list[0]}" | head -100000 | grep -c 'MC:Z:' || true)
-        set -o pipefail
-        if [ "${mc_count}" -eq 0 ]; then
-          echo "ERROR: no MC:Z tags in the first 100000 records of" >&2
-          echo "       $(basename "${bam_list[0]}"), but fixmate was skipped. REDUX needs mate" >&2
-          echo "       CIGAR tags to mark duplicates correctly and will otherwise do so" >&2
-          echo "       silently wrong. Set doFixmate=true for these alignments." >&2
-          exit 1
-        fi
-        echo "mate CIGAR tags present (${mc_count} in the first 100000 records)" >&2
-      fi
 
       # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
       # and because the header line is itself tab-delimited those become extra fields --

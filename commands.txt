@@ -111,6 +111,21 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
 ```
       set -euo pipefail
+      # head closes the pipe, and grep -c exits 1 when it matches nothing, so neither can be
+      # allowed to fail the task.
+      set +o pipefail
+      n=$(samtools view "~{bam}" | head -~{records} | grep -c 'MC:Z:' || true)
+      set -o pipefail
+      if [ "${n}" -gt 0 ]; then
+        echo "true" > has_mc_tags.txt
+        echo "mate CIGAR tags present (${n} in the first ~{records} records)" >&2
+      else
+        echo "false" > has_mc_tags.txt
+        echo "no mate CIGAR tags in the first ~{records} records" >&2
+      fi
+```
+```
+      set -euo pipefail
       # Symlink BAM and BAI preserving the original filenames so samtools can
       # locate the index automatically (it derives the index path from the BAM
       # path; renaming would break that lookup).
@@ -141,22 +156,6 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
       set -euo pipefail
       bam_list=(~{sep=" " bams})
-
-      # Skipping fixmate is a claim about the data, and if it is wrong REDUX marks duplicates
-      # incorrectly and reports nothing. Check the claim instead of trusting it.
-      if ~{expect_mc_tags}; then
-        set +o pipefail   # head closes the pipe, and grep -c exits 1 when it matches nothing
-        mc_count=$(samtools view "${bam_list[0]}" | head -100000 | grep -c 'MC:Z:' || true)
-        set -o pipefail
-        if [ "${mc_count}" -eq 0 ]; then
-          echo "ERROR: no MC:Z tags in the first 100000 records of" >&2
-          echo "       $(basename "${bam_list[0]}"), but fixmate was skipped. REDUX needs mate" >&2
-          echo "       CIGAR tags to mark duplicates correctly and will otherwise do so" >&2
-          echo "       silently wrong. Set doFixmate=true for these alignments." >&2
-          exit 1
-        fi
-        echo "mate CIGAR tags present (${mc_count} in the first 100000 records)" >&2
-      fi
 
       # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
       # and because the header line is itself tab-delimited those become extra fields --

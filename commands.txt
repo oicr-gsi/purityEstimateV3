@@ -117,8 +117,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       ln -s ~{bam} .
       ln -s ~{bai} .
       bam_name=$(basename ~{bam})
-      samtools view -h -@ 2 "${bam_name}" ~{chr} \
-        | awk '/^@/{print;next} $7=="="' \
+      # -e 'rnext == rname' rather than awk on $7=="=": RNEXT is written as "=" when the
+      # mate is on the same reference, but a writer may spell the reference name out instead,
+      # and the samtools expression means what is intended either way.
+      samtools view -h -@ 2 -e 'rnext == rname' "${bam_name}" ~{chr} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
@@ -128,10 +130,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       # -f 1:  paired
       # -F 12: neither read nor mate unmapped
-      # awk:   keep header lines and reads where mate is on a different chromosome
+      # -e:    mate on a different reference; the complement of the fixmate_chr expression
       # No index needed: full-file sequential scan.
-      samtools view -h -@ 2 -f 1 -F 12 ~{bam} \
-        | awk '/^@/{print;next} $7!="="' \
+      samtools view -h -@ 2 -f 1 -F 12 -e 'rnext != rname' ~{bam} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -

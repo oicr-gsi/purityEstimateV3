@@ -48,6 +48,7 @@ workflow purityEstimateV3 {
         String?       tumor_sample_id         # required for PE mode; overrides @RG SM in WG modes
         String?       sequencing_platform     # "illumina" | "sbx" | "ultima"; null = detect from @RG PL
         Boolean       run_redux = false       # see note above; semantics changed in 3.x
+        Boolean       doFixmate = true        # see parameter_meta
         Boolean       run_control = false     # also estimate purity for each control (PE/WG_PE only)
         Array[Pair[String, String]]? controls # PE mode: (control_id, bam_path) pairs; BAI at bam_path+".bai"
         String        outputFileNamePrefix
@@ -71,6 +72,7 @@ workflow purityEstimateV3 {
         tumor_sample_id:        "Primary tumour sample ID. Normally leave unset: in WG modes it is read from the tumour @RG SM tag, and in PE mode it is derived from the WG tarball's purple/ filenames. If given, it overrides the @RG SM tag in WG modes and is cross-checked against the tarball in PE mode"
         sequencing_platform:    "Sequencing platform passed to --sequencing_platform: illumina, sbx or ultima. Leave unset to detect it from the @RG PL tag"
         run_redux:              "When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs"
+        doFixmate:              "Whether to add mate CIGAR (MC) tags before REDUX. Only consulted when run_redux is true and the sample is Illumina, since single-end reads have no mates to fix. Leave true for alignments that lack MC tags; set false when the aligner already wrote them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter entirely. The inputs are still merged, since REDUX takes one alignment file per sample"
         run_control:            "When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)"
         controls:               "PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true"
         outputFileNamePrefix:   "Output directory prefix; the pipeline writes to outputFileNamePrefix/group_id/"
@@ -162,15 +164,15 @@ workflow purityEstimateV3 {
     # detection, for data with a missing or wrong PL tag.
     if (defined(tumor_alignments)) {
         String tumor_platform  = select_first([sequencing_platform, tumor_info.platform])
-        Boolean tumor_fixmate  = run_redux && tumor_platform == "illumina"
+        Boolean tumor_fixmate  = run_redux && doFixmate && tumor_platform == "illumina"
     }
     if (defined(normal_alignments)) {
         String normal_platform = select_first([sequencing_platform, normal_info.platform])
-        Boolean normal_fixmate = run_redux && normal_platform == "illumina"
+        Boolean normal_fixmate = run_redux && doFixmate && normal_platform == "illumina"
     }
     if (defined(longitudinal_alignments)) {
         String longitudinal_platform = select_first([sequencing_platform, longitudinal_info.platform])
-        Boolean longitudinal_fixmate = run_redux && longitudinal_platform == "illumina"
+        Boolean longitudinal_fixmate = run_redux && doFixmate && longitudinal_platform == "illumina"
     }
 
     # The tumour sample ID is resolved per mode, NOT here. A workflow-level declaration is
@@ -181,6 +183,11 @@ workflow purityEstimateV3 {
 
     # ---------------------------------------------------------------------------------
     # Stage each sample: CRAM -> BAM, then optional fixmate, then merge when needed.
+    #
+    # @PG sanitisation is tied to run_redux rather than to fixmate. htsjdk rejects a header
+    # whose @PG CL: field contains tabs, which an aligner can write, so anything going on to
+    # REDUX needs it -- whether or not fixmate ran. Alignments that bypass REDUX keep their
+    # @PG provenance.
     # ---------------------------------------------------------------------------------
 
     if (defined(tumor_alignments)) {
@@ -214,12 +221,12 @@ workflow purityEstimateV3 {
         }
 
         # Nothing to merge for a single already-fixmate-free alignment; use it as is.
-        if (!select_first([tumor_fixmate]) && length(tumor_staged_bam) > 1) {
+        if (!select_first([tumor_fixmate]) && (run_redux || length(tumor_staged_bam) > 1)) {
             call merge_bams as merge_tumor_plain {
                 input:
                     bams = tumor_staged_bam,
                     bais = tumor_staged_bai,
-                    sanitize_header = false
+                    sanitize_header = run_redux
             }
         }
 
@@ -257,12 +264,12 @@ workflow purityEstimateV3 {
             }
         }
 
-        if (!select_first([normal_fixmate]) && length(normal_staged_bam) > 1) {
+        if (!select_first([normal_fixmate]) && (run_redux || length(normal_staged_bam) > 1)) {
             call merge_bams as merge_normal_plain {
                 input:
                     bams = normal_staged_bam,
                     bais = normal_staged_bai,
-                    sanitize_header = false
+                    sanitize_header = run_redux
             }
         }
 
@@ -300,12 +307,12 @@ workflow purityEstimateV3 {
             }
         }
 
-        if (!select_first([longitudinal_fixmate]) && length(longitudinal_staged_bam) > 1) {
+        if (!select_first([longitudinal_fixmate]) && (run_redux || length(longitudinal_staged_bam) > 1)) {
             call merge_bams as merge_longitudinal_plain {
                 input:
                     bams = longitudinal_staged_bam,
                     bais = longitudinal_staged_bai,
-                    sanitize_header = false
+                    sanitize_header = run_redux
             }
         }
 
@@ -782,8 +789,10 @@ task fixmate_chr {
       ln -s ~{bam} .
       ln -s ~{bai} .
       bam_name=$(basename ~{bam})
-      samtools view -h -@ 2 "${bam_name}" ~{chr} \
-        | awk '/^@/{print;next} $7=="="' \
+      # -e 'rnext == rname' rather than awk on $7=="=": RNEXT is written as "=" when the
+      # mate is on the same reference, but a writer may spell the reference name out instead,
+      # and the samtools expression means what is intended either way.
+      samtools view -h -@ 2 -e 'rnext == rname' "${bam_name}" ~{chr} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
@@ -829,10 +838,9 @@ task fixmate_discordant {
       set -euo pipefail
       # -f 1:  paired
       # -F 12: neither read nor mate unmapped
-      # awk:   keep header lines and reads where mate is on a different chromosome
+      # -e:    mate on a different reference; the complement of the fixmate_chr expression
       # No index needed: full-file sequential scan.
-      samtools view -h -@ 2 -f 1 -F 12 ~{bam} \
-        | awk '/^@/{print;next} $7!="="' \
+      samtools view -h -@ 2 -f 1 -F 12 -e 'rnext != rname' ~{bam} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -

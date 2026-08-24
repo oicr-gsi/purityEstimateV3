@@ -75,6 +75,7 @@ Parameter|Value|Default|Description
 `tumor_sample_id`|String?|None|Primary tumour sample ID. Normally leave unset: in WG modes it is read from the tumour @RG SM tag, and in PE mode it is derived from the WG tarball's purple/ filenames. If given, it overrides the @RG SM tag in WG modes and is cross-checked against the tarball in PE mode
 `sequencing_platform`|String?|None|Sequencing platform passed to --sequencing_platform: illumina, sbx or ultima. Leave unset to detect it from the @RG PL tag
 `run_redux`|Boolean|false|When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs
+`doFixmate`|Boolean|true|Whether to add mate CIGAR (MC) tags before REDUX. Only consulted when run_redux is true and the sample is Illumina, since single-end reads have no mates to fix. Leave true for alignments that lack MC tags; set false when the aligner already wrote them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter entirely. The inputs are still merged, since REDUX takes one alignment file per sample
 `run_control`|Boolean|false|When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)
 `controls`|Array[Pair[String,String]]?|None|PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true
 `include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work
@@ -310,8 +311,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       ln -s ~{bam} .
       ln -s ~{bai} .
       bam_name=$(basename ~{bam})
-      samtools view -h -@ 2 "${bam_name}" ~{chr} \
-        | awk '/^@/{print;next} $7=="="' \
+      # -e 'rnext == rname' rather than awk on $7=="=": RNEXT is written as "=" when the
+      # mate is on the same reference, but a writer may spell the reference name out instead,
+      # and the samtools expression means what is intended either way.
+      samtools view -h -@ 2 -e 'rnext == rname' "${bam_name}" ~{chr} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
@@ -321,10 +324,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       # -f 1:  paired
       # -F 12: neither read nor mate unmapped
-      # awk:   keep header lines and reads where mate is on a different chromosome
+      # -e:    mate on a different reference; the complement of the fixmate_chr expression
       # No index needed: full-file sequential scan.
-      samtools view -h -@ 2 -f 1 -F 12 ~{bam} \
-        | awk '/^@/{print;next} $7!="="' \
+      samtools view -h -@ 2 -f 1 -F 12 -e 'rnext != rname' ~{bam} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -

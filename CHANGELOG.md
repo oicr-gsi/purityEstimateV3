@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-08-19
 ### Added
+- The `@PG` header is now checked rather than assumed. `merge_bams` strips it only when it
+  is actually malformed -- an `@PG` line carrying more than one `ID:` field, which is what an
+  aligner embedding tabs in `CL:` produces and what htsjdk rejects -- so a well-formed header
+  keeps its provenance. `sanitize_header` is replaced by `repair_flags` (the unpaired-flag
+  repair that only the fixmate path needs) and `strip_bad_pg` (run the check at all), which
+  were previously conflated.
+- `doFixmate = false` is verified against the data. `merge_bams` fails if the alignments carry
+  no `MC:Z` tags, rather than letting REDUX mark duplicates silently wrong.
 - `doFixmate`. Consulted only when `run_redux` is true and the sample is Illumina: leave it
   true for alignments that lack mate CIGAR tags, set it false when the aligner already wrote
   them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter. The inputs are still

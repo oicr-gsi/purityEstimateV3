@@ -113,10 +113,12 @@ Parameter|Value|Default|Description
 `fixmate_tumor_disc.threads`|Int|4|Number of samtools threads
 `fixmate_tumor_disc.memory`|Int|16|Memory in GB
 `fixmate_tumor_disc.timeout`|Int|3|Wall-clock timeout in hours
+`merge_tumor_fixmate.expect_mc_tags`|Boolean|false|Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them
 `merge_tumor_fixmate.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_tumor_fixmate.threads`|Int|8|Number of samtools threads
 `merge_tumor_fixmate.memory`|Int|16|Memory in GB
 `merge_tumor_fixmate.timeout`|Int|24|Wall-clock timeout in hours
+`merge_tumor_plain.repair_flags`|Boolean|false|Repair reads whose paired flag was cleared while the first/second-in-pair flags were left set. Needed only after per-chromosome fixmate
 `merge_tumor_plain.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_tumor_plain.threads`|Int|8|Number of samtools threads
 `merge_tumor_plain.memory`|Int|16|Memory in GB
@@ -133,10 +135,12 @@ Parameter|Value|Default|Description
 `fixmate_normal_disc.threads`|Int|4|Number of samtools threads
 `fixmate_normal_disc.memory`|Int|16|Memory in GB
 `fixmate_normal_disc.timeout`|Int|3|Wall-clock timeout in hours
+`merge_normal_fixmate.expect_mc_tags`|Boolean|false|Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them
 `merge_normal_fixmate.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_normal_fixmate.threads`|Int|8|Number of samtools threads
 `merge_normal_fixmate.memory`|Int|16|Memory in GB
 `merge_normal_fixmate.timeout`|Int|24|Wall-clock timeout in hours
+`merge_normal_plain.repair_flags`|Boolean|false|Repair reads whose paired flag was cleared while the first/second-in-pair flags were left set. Needed only after per-chromosome fixmate
 `merge_normal_plain.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_normal_plain.threads`|Int|8|Number of samtools threads
 `merge_normal_plain.memory`|Int|16|Memory in GB
@@ -153,10 +157,12 @@ Parameter|Value|Default|Description
 `fixmate_longitudinal_disc.threads`|Int|4|Number of samtools threads
 `fixmate_longitudinal_disc.memory`|Int|16|Memory in GB
 `fixmate_longitudinal_disc.timeout`|Int|3|Wall-clock timeout in hours
+`merge_longitudinal_fixmate.expect_mc_tags`|Boolean|false|Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them
 `merge_longitudinal_fixmate.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_longitudinal_fixmate.threads`|Int|8|Number of samtools threads
 `merge_longitudinal_fixmate.memory`|Int|16|Memory in GB
 `merge_longitudinal_fixmate.timeout`|Int|24|Wall-clock timeout in hours
+`merge_longitudinal_plain.repair_flags`|Boolean|false|Repair reads whose paired flag was cleared while the first/second-in-pair flags were left set. Needed only after per-chromosome fixmate
 `merge_longitudinal_plain.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `merge_longitudinal_plain.threads`|Int|8|Number of samtools threads
 `merge_longitudinal_plain.memory`|Int|16|Memory in GB
@@ -336,6 +342,40 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       bam_list=(~{sep=" " bams})
 
+      # Skipping fixmate is a claim about the data, and if it is wrong REDUX marks duplicates
+      # incorrectly and reports nothing. Check the claim instead of trusting it.
+      if ~{expect_mc_tags}; then
+        set +o pipefail   # head closes the pipe, and grep -c exits 1 when it matches nothing
+        mc_count=$(samtools view "${bam_list[0]}" | head -100000 | grep -c 'MC:Z:' || true)
+        set -o pipefail
+        if [ "${mc_count}" -eq 0 ]; then
+          echo "ERROR: no MC:Z tags in the first 100000 records of" >&2
+          echo "       $(basename "${bam_list[0]}"), but fixmate was skipped. REDUX needs mate" >&2
+          echo "       CIGAR tags to mark duplicates correctly and will otherwise do so" >&2
+          echo "       silently wrong. Set doFixmate=true for these alignments." >&2
+          exit 1
+        fi
+        echo "mate CIGAR tags present (${mc_count} in the first 100000 records)" >&2
+      fi
+
+      # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
+      # and because the header line is itself tab-delimited those become extra fields --
+      # including a second ID: -- which is what htsjdk rejects. Counting ID: fields detects
+      # exactly that, so a well-formed header keeps its provenance.
+      strip_pg=false
+      if ~{strip_bad_pg}; then
+        bad_pg=$(samtools view -H "${bam_list[0]}" \
+                 | awk -F'\t' '/^@PG/ {n=0; for (i=1;i<=NF;i++) if ($i ~ /^ID:/) n++; if (n>1) c++}
+                               END {print c+0}')
+        if [ "${bad_pg}" -gt 0 ]; then
+          echo "@PG header has an embedded tab (${bad_pg} line(s) with more than one ID:);" >&2
+          echo "stripping @PG so htsjdk can read the header" >&2
+          strip_pg=true
+        else
+          echo "@PG header is well formed; keeping it" >&2
+        fi
+      fi
+
       merge_stream() {
         if [ "${#bam_list[@]}" -gt 1 ]; then
           samtools merge -f -c -p -u -@ ~{threads} - "${bam_list[@]}"
@@ -344,18 +384,19 @@ This section lists command(s) run by purityEstimateV3 workflow
         fi
       }
 
-      # @PG stripping: an aligner may embed tab-separated fields in CL:, which makes htsjdk
-      # read a spurious second ID: field and reject the header.
-      # Flag fix: per-chromosome fixmate may clear 0x1 while leaving 0x40/0x80 set on
-      # discordant-mate reads; htsjdk treats this as a validation error.
-      if ~{sanitize_header}; then
+      if ${strip_pg} || ~{repair_flags}; then
         merge_stream \
           | samtools view -h -@ ~{threads} \
-          | awk 'BEGIN{OFS="\t"} /^@PG/{next} /^@/{print;next} {
-              f=int($2)
-              if (and(f,1)==0) { f=f-and(f,64)-and(f,128); $2=f }
-              print
-            }' \
+          | awk -v strip_pg="${strip_pg}" -v repair="~{repair_flags}" 'BEGIN{OFS="\t"}
+              /^@PG/ { if (strip_pg == "true") next; print; next }
+              /^@/   { print; next }
+              {
+                if (repair == "true") {
+                  f = int($2)
+                  if (and(f,1) == 0) { f = f - and(f,64) - and(f,128); $2 = f }
+                }
+                print
+              }' \
           | samtools view -@ ~{threads} -O BAM -o merged.bam
       else
         merge_stream | samtools view -@ ~{threads} -O BAM -o merged.bam

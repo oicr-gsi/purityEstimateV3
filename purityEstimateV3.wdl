@@ -216,7 +216,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = flatten([flatten(fixmate_tumor_chr.fixed_bam), fixmate_tumor_disc.fixed_bam]),
                     bais = flatten([flatten(fixmate_tumor_chr.fixed_bai), fixmate_tumor_disc.fixed_bai]),
-                    sanitize_header = true
+                    repair_flags = true,
+                    strip_bad_pg = true
             }
         }
 
@@ -226,7 +227,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = tumor_staged_bam,
                     bais = tumor_staged_bai,
-                    sanitize_header = run_redux
+                    strip_bad_pg   = run_redux,
+                    expect_mc_tags = run_redux && !doFixmate && tumor_platform == "illumina"
             }
         }
 
@@ -260,7 +262,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = flatten([flatten(fixmate_normal_chr.fixed_bam), fixmate_normal_disc.fixed_bam]),
                     bais = flatten([flatten(fixmate_normal_chr.fixed_bai), fixmate_normal_disc.fixed_bai]),
-                    sanitize_header = true
+                    repair_flags = true,
+                    strip_bad_pg = true
             }
         }
 
@@ -269,7 +272,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = normal_staged_bam,
                     bais = normal_staged_bai,
-                    sanitize_header = run_redux
+                    strip_bad_pg   = run_redux,
+                    expect_mc_tags = run_redux && !doFixmate && normal_platform == "illumina"
             }
         }
 
@@ -303,7 +307,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = flatten([flatten(fixmate_longitudinal_chr.fixed_bam), fixmate_longitudinal_disc.fixed_bam]),
                     bais = flatten([flatten(fixmate_longitudinal_chr.fixed_bai), fixmate_longitudinal_disc.fixed_bai]),
-                    sanitize_header = true
+                    repair_flags = true,
+                    strip_bad_pg = true
             }
         }
 
@@ -312,7 +317,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = longitudinal_staged_bam,
                     bais = longitudinal_staged_bai,
-                    sanitize_header = run_redux
+                    strip_bad_pg   = run_redux,
+                    expect_mc_tags = run_redux && !doFixmate && longitudinal_platform == "illumina"
             }
         }
 
@@ -860,14 +866,23 @@ task fixmate_discordant {
     }
 }
 
-# Merge coordinate-sorted BAMs. Used for two different things:
-#   sanitize_header=true   fixmate shards from one sample (chromosome slices + discordant)
-#   sanitize_header=false  whole alignments from several flowcells/lanes
+# Merge coordinate-sorted BAMs, and check the header is fit for what consumes it.
+#
+#   repair_flags     per-chromosome fixmate can clear 0x1 while leaving 0x40/0x80 set on
+#                    discordant-mate reads, which htsjdk treats as a validation error. Only
+#                    the fixmate path needs this.
+#   strip_bad_pg     set when the output feeds REDUX, i.e. htsjdk. An @PG line is only
+#                    stripped if it is ACTUALLY malformed, so a well-formed header keeps its
+#                    provenance; see the detection in the command.
+#   expect_mc_tags   assert that mate CIGAR tags are already present, for the case where
+#                    fixmate was deliberately skipped.
 task merge_bams {
     input {
         Array[File] bams
         Array[File] bais
-        Boolean     sanitize_header = true
+        Boolean     repair_flags = false
+        Boolean     strip_bad_pg = false
+        Boolean     expect_mc_tags = false
         String      modules = "samtools/1.16.1"
         Int threads = 8
         Int memory  = 16
@@ -875,18 +890,54 @@ task merge_bams {
     }
 
     parameter_meta {
-        bams:            "Coordinate-sorted BAMs to merge"
-        bais:            "Index files corresponding to each entry in bams (same order)"
-        sanitize_header: "When true, strip @PG lines and repair unpaired-read flags. Needed after per-chromosome fixmate, and harmful for vendor alignments because it discards their @PG provenance"
-        modules:         "Environment modules to load (samtools required)"
-        threads:         "Number of samtools threads"
-        memory:          "Memory in GB"
-        timeout:         "Wall-clock timeout in hours"
+        bams:           "Coordinate-sorted BAMs to merge"
+        bais:           "Index files corresponding to each entry in bams (same order)"
+        repair_flags:   "Repair reads whose paired flag was cleared while the first/second-in-pair flags were left set. Needed only after per-chromosome fixmate"
+        strip_bad_pg:   "Check the @PG header and strip it if malformed. Set when the output feeds REDUX; a well-formed header is left alone"
+        expect_mc_tags: "Fail if the inputs carry no mate CIGAR tags. Set when fixmate was skipped on the claim that the aligner already wrote them"
+        modules:        "Environment modules to load (samtools required)"
+        threads:        "Number of samtools threads"
+        memory:         "Memory in GB"
+        timeout:        "Wall-clock timeout in hours"
     }
 
     command <<<
       set -euo pipefail
       bam_list=(~{sep=" " bams})
+
+      # Skipping fixmate is a claim about the data, and if it is wrong REDUX marks duplicates
+      # incorrectly and reports nothing. Check the claim instead of trusting it.
+      if ~{expect_mc_tags}; then
+        set +o pipefail   # head closes the pipe, and grep -c exits 1 when it matches nothing
+        mc_count=$(samtools view "${bam_list[0]}" | head -100000 | grep -c 'MC:Z:' || true)
+        set -o pipefail
+        if [ "${mc_count}" -eq 0 ]; then
+          echo "ERROR: no MC:Z tags in the first 100000 records of" >&2
+          echo "       $(basename "${bam_list[0]}"), but fixmate was skipped. REDUX needs mate" >&2
+          echo "       CIGAR tags to mark duplicates correctly and will otherwise do so" >&2
+          echo "       silently wrong. Set doFixmate=true for these alignments." >&2
+          exit 1
+        fi
+        echo "mate CIGAR tags present (${mc_count} in the first 100000 records)" >&2
+      fi
+
+      # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
+      # and because the header line is itself tab-delimited those become extra fields --
+      # including a second ID: -- which is what htsjdk rejects. Counting ID: fields detects
+      # exactly that, so a well-formed header keeps its provenance.
+      strip_pg=false
+      if ~{strip_bad_pg}; then
+        bad_pg=$(samtools view -H "${bam_list[0]}" \
+                 | awk -F'\t' '/^@PG/ {n=0; for (i=1;i<=NF;i++) if ($i ~ /^ID:/) n++; if (n>1) c++}
+                               END {print c+0}')
+        if [ "${bad_pg}" -gt 0 ]; then
+          echo "@PG header has an embedded tab (${bad_pg} line(s) with more than one ID:);" >&2
+          echo "stripping @PG so htsjdk can read the header" >&2
+          strip_pg=true
+        else
+          echo "@PG header is well formed; keeping it" >&2
+        fi
+      fi
 
       merge_stream() {
         if [ "${#bam_list[@]}" -gt 1 ]; then
@@ -896,18 +947,19 @@ task merge_bams {
         fi
       }
 
-      # @PG stripping: an aligner may embed tab-separated fields in CL:, which makes htsjdk
-      # read a spurious second ID: field and reject the header.
-      # Flag fix: per-chromosome fixmate may clear 0x1 while leaving 0x40/0x80 set on
-      # discordant-mate reads; htsjdk treats this as a validation error.
-      if ~{sanitize_header}; then
+      if ${strip_pg} || ~{repair_flags}; then
         merge_stream \
           | samtools view -h -@ ~{threads} \
-          | awk 'BEGIN{OFS="\t"} /^@PG/{next} /^@/{print;next} {
-              f=int($2)
-              if (and(f,1)==0) { f=f-and(f,64)-and(f,128); $2=f }
-              print
-            }' \
+          | awk -v strip_pg="${strip_pg}" -v repair="~{repair_flags}" 'BEGIN{OFS="\t"}
+              /^@PG/ { if (strip_pg == "true") next; print; next }
+              /^@/   { print; next }
+              {
+                if (repair == "true") {
+                  f = int($2)
+                  if (and(f,1) == 0) { f = f - and(f,64) - and(f,128); $2 = f }
+                }
+                print
+              }' \
           | samtools view -@ ~{threads} -O BAM -o merged.bam
       else
         merge_stream | samtools view -@ ~{threads} -O BAM -o merged.bam
@@ -928,7 +980,6 @@ task merge_bams {
         modules: modules
     }
 }
-
 # Extract a WG tarball (amber/, cobalt/, purple/, pave/, sage/) into a local directory,
 # return its absolute path, and work out which tumour sample the outputs belong to.
 task extract_wgts {

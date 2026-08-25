@@ -309,7 +309,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
       # its block queues is far slower than simply running single-threaded -- and silently so.
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
-      avail=$(nproc 2>/dev/null || echo 1)
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
+      # NSLOTS are what the scheduler actually granted.
+      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
         echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
@@ -351,7 +356,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
       # its block queues is far slower than simply running single-threaded -- and silently so.
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
-      avail=$(nproc 2>/dev/null || echo 1)
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
+      # NSLOTS are what the scheduler actually granted.
+      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
         echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
@@ -380,7 +390,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
       # its block queues is far slower than simply running single-threaded -- and silently so.
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
-      avail=$(nproc 2>/dev/null || echo 1)
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
+      # NSLOTS are what the scheduler actually granted.
+      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
         echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
@@ -404,7 +419,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
       # its block queues is far slower than simply running single-threaded -- and silently so.
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
-      avail=$(nproc 2>/dev/null || echo 1)
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
+      # NSLOTS are what the scheduler actually granted.
+      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
         echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2

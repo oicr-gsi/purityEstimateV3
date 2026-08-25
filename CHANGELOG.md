@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-08-19
 ### Added
+- samtools tasks cap their thread count at the CPUs actually allocated, and log a note when
+  the two differ. A backend that does not map the `cpu` runtime attribute otherwise leaves
+  samtools oversubscribed on one core, which is slower than running single-threaded and gives
+  no indication why.
 - The `@PG` header is now checked rather than assumed. `merge_bams` strips it only when it
   is actually malformed -- an `@PG` line carrying more than one `ID:` field, which is what an
   aligner embedding tabs in `CL:` produces and what htsjdk rejects -- so a well-formed header

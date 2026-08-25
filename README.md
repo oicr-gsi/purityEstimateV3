@@ -305,6 +305,18 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
 ```
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       # Cromwell localizes the CRAM and its index into different directories, so symlink
       # both here with matching basenames for samtools to find the index.
       ln -s ~{aln} ./input.cram
@@ -315,8 +327,8 @@ This section lists command(s) run by purityEstimateV3 workflow
         exit 1
       }
 
-      samtools view -@ ~{threads} -T ~{cram_reference} -b -o converted.bam ./input.cram
-      samtools index -@ ~{threads} converted.bam
+      samtools view -@ "${threads}" -T ~{cram_reference} -b -o converted.bam ./input.cram
+      samtools index -@ "${threads}" converted.bam
 ```
 ```
       set -euo pipefail
@@ -335,6 +347,18 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
 ```
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       # Symlink BAM and BAI preserving the original filenames so samtools can
       # locate the index automatically (it derives the index path from the BAM
       # path; renaming would break that lookup).
@@ -347,11 +371,23 @@ This section lists command(s) run by purityEstimateV3 workflow
       samtools view -h -@ 2 -e 'rnext == rname' "${bam_name}" ~{chr} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
-        | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
+        | samtools sort -@ "${threads}" -m 2G -o ~{chr}.fixedmate.bam -
       samtools index ~{chr}.fixedmate.bam
 ```
 ```
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       # -f 1:  paired
       # -F 12: neither read nor mate unmapped
       # -e:    mate on a different reference; the complement of the fixmate_chr expression
@@ -359,11 +395,23 @@ This section lists command(s) run by purityEstimateV3 workflow
       samtools view -h -@ 2 -f 1 -F 12 -e 'rnext != rname' ~{bam} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
-        | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -
+        | samtools sort -@ "${threads}" -m 2G -o discordant.fixedmate.bam -
       samtools index discordant.fixedmate.bam
 ```
 ```
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       bam_list=(~{sep=" " bams})
 
       # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
@@ -386,7 +434,7 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       merge_stream() {
         if [ "${#bam_list[@]}" -gt 1 ]; then
-          samtools merge -f -c -p -u -@ ~{threads} - "${bam_list[@]}"
+          samtools merge -f -c -p -u -@ "${threads}" - "${bam_list[@]}"
         else
           samtools view -h -u "${bam_list[0]}"
         fi
@@ -394,7 +442,7 @@ This section lists command(s) run by purityEstimateV3 workflow
 
       if ${strip_pg} || ~{repair_flags}; then
         merge_stream \
-          | samtools view -h -@ ~{threads} \
+          | samtools view -h -@ "${threads}" \
           | awk -v strip_pg="${strip_pg}" -v repair="~{repair_flags}" 'BEGIN{OFS="\t"}
               /^@PG/ { if (strip_pg == "true") next; print; next }
               /^@/   { print; next }
@@ -405,12 +453,12 @@ This section lists command(s) run by purityEstimateV3 workflow
                 }
                 print
               }' \
-          | samtools view -@ ~{threads} -O BAM -o merged.bam
+          | samtools view -@ "${threads}" -O BAM -o merged.bam
       else
-        merge_stream | samtools view -@ ~{threads} -O BAM -o merged.bam
+        merge_stream | samtools view -@ "${threads}" -O BAM -o merged.bam
       fi
 
-      samtools index -@ ~{threads} merged.bam
+      samtools index -@ "${threads}" merged.bam
 ```
 ```
       set -euo pipefail

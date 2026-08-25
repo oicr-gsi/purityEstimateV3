@@ -6,7 +6,7 @@ Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA
 
 ![purityEstimateV3 workflow](docs/purityEstimateV3.svg)
 
-In the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz; regenerate with `bash v3/render.sh`.
+In the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz, in docs/.
 
 ### Valid input combinations
 
@@ -34,6 +34,8 @@ Platform is read per sample from the @RG PL tag; The wdl input `sequencing_platf
 ### Note on deliverables of wdl
 
 **Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration. They are therefore still produced, but excluded from the WG results because MRD assay does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. 
+
+**The WG archive carries two somatic VCFs.** `<sample>.purple.somatic.vcf.gz` is PURPLE's full call set, untouched. `<sample>.purple.somatic.prefiltered.vcf.gz` is the same call set reduced to the sites that can carry MRD signal, by the primary filters (mappability, repeat count, SNV only, tier, nearby indel, subclonal) and by the germline filter that WISP documents but cannot apply, since oncoanalyser gives it no reference genotype. `primary_site_report` gives the per-filter breakdown. In PE mode `use_primary_filters` chooses which of the two the plasma stage works from; note that WISP applies the primary filters itself either way, and records the reason per site, so the prefiltered VCF is a deliverable rather than a correction.
 
 **LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. 
 
@@ -73,12 +75,16 @@ Parameter|Value|Default|Description
 `tumor_sample_id`|String?|None|Primary tumour sample ID. Normally leave unset: in WG modes it is read from the tumour @RG SM tag, and in PE mode it is derived from the WG tarball's purple/ filenames. If given, it overrides the @RG SM tag in WG modes and is cross-checked against the tarball in PE mode
 `sequencing_platform`|String?|None|Sequencing platform passed to --sequencing_platform: illumina, sbx or ultima. Leave unset to detect it from the @RG PL tag
 `run_redux`|Boolean|false|When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs
+`doFixmate`|Boolean|true|Whether to add mate CIGAR (MC) tags before REDUX. Only consulted when run_redux is true and the sample is Illumina, since single-end reads have no mates to fix. Leave true for alignments that lack MC tags; set false when the aligner already wrote them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter entirely. The inputs are still merged, since REDUX takes one alignment file per sample
 `run_control`|Boolean|false|When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)
 `controls`|Array[Pair[String,String]]?|None|PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true
-`include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work, which would save only about 2 minutes
+`include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
+`use_primary_filters`|Boolean|true|PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
-`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. oncoanalyser/3.0.0-rc.3 supplies the pipeline checkout, the Singularity image cache, NXF_HOME, the qsub shim, the OICR overlay config and the Nextflow launcher on PATH; oncoanalyser-data supplies the HMF reference bundle and hs38DH. The paths below read variables exported by both. Do NOT substitute the oncoanalyser 2.x module: its lib/ shadows the system libcurl and its bundled Nextflow is too old for this pipeline
+`scheduler`|String|"sge"|Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
+`nextflow_config`|Array[String]?|None|Config overlays passed to nextflow, each with its own -c, in order. Leave null on SGE to use the overlay the oncoanalyser module ships. A site whose scheduler differs must supply its own, because that overlay sets the executor; split it so the settings that hold everywhere (genome paths, container overrides, per-process resources) stay in one file and only the executor and filesystem binds are per-site
+`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
 
 
 #### Optional task parameters:
@@ -155,16 +161,21 @@ Parameter|Value|Default|Description
 `merge_longitudinal_plain.threads`|Int|8|Number of samtools threads
 `merge_longitudinal_plain.memory`|Int|16|Memory in GB
 `merge_longitudinal_plain.timeout`|Int|24|Wall-clock timeout in hours
-`run_wgts.memory`|Int|32|Memory in GB for the Cromwell/SGE task (hosts the Nextflow driver JVM only)
+`run_wgts.memory`|Int|32|Memory in GB for this task, which hosts the Nextflow driver only; the pipeline processes get their own allocations
 `run_wgts.timeout`|Int|24|Wall-clock timeout in hours
 `extract_wgts.memory`|Int|8|Memory in GB
 `extract_wgts.timeout`|Int|1|Wall-clock timeout in hours
-`subject_purity.memory`|Int|32|Memory in GB for the Cromwell/SGE task (hosts the Nextflow driver JVM only)
+`pre_filtering.modules`|String|"bcftools/1.9"|Environment modules to load (bcftools required)
+`pre_filtering.memory`|Int|4|Memory in GB
+`pre_filtering.timeout`|Int|2|Wall-clock timeout in hours
+`pack_wgts.memory`|Int|8|Memory in GB
+`pack_wgts.timeout`|Int|4|Wall-clock timeout in hours
+`subject_purity.memory`|Int|32|Memory in GB for this task, which hosts the Nextflow driver only; the pipeline processes get their own allocations
 `subject_purity.timeout`|Int|10|Wall-clock timeout in hours
 `control_info.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `control_info.memory`|Int|4|Memory in GB
 `control_info.timeout`|Int|1|Wall-clock timeout in hours
-`control_purity.memory`|Int|32|Memory in GB for the Cromwell/SGE task (hosts the Nextflow driver JVM only)
+`control_purity.memory`|Int|32|Memory in GB for this task, which hosts the Nextflow driver only; the pipeline processes get their own allocations
 `control_purity.timeout`|Int|10|Wall-clock timeout in hours
 `collect_results.memory`|Int|16|Memory in GB
 `collect_results.timeout`|Int|10|Wall-clock timeout in hours
@@ -177,7 +188,8 @@ Output | Type | Description | Labels
 `wg_tarball`|File?|Tarball of oncoanalyser WGTS outputs (amber/, cobalt/, purple/, pave/, sage/) for the primary tumour sample; produced in WG and WG_PE mode. Used as the wgts_tarball input for a subsequent PE run. REDUX alignments are deliberately excluded to keep the archive small.|vidarr_label: wgTarball
 `wisp_tarballs`|File?|Combined tarball of WISP output directories for the subject longitudinal sample and all control samples; produced in PE and WG_PE mode.|vidarr_label: wispTarballs
 `wisp_summary`|File?|TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.|vidarr_label: wispSummary
-`pipeline_info`|File|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions) from the primary nextflow run; always produced. In WG_PE mode the PE run's pipeline_info is used.|vidarr_label: pipelineInfo
+`primary_site_report`|File?|Plain-text report of the primary tumour's variant list: how many candidate sites survive each filter in turn, primary filters and the germline filter alike. The final count is the number of sites available for MRD assessment, which is what says whether a plasma sample is worth taking. Produced in WG and WG_PE mode.|vidarr_label: primarySiteReport
+`pipeline_info`|File|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions); always produced. In WG_PE mode the PE run's copy is used.|vidarr_label: pipelineInfo
 
 
 ## Commands
@@ -220,12 +232,21 @@ This section lists command(s) run by purityEstimateV3 workflow
       # A tumour-only primary does not merely degrade the MRD result, it INVERTS it. With no
       # matched normal SAGE cannot subtract germline variants, so the somatic call set is
       # dominated by germline sites; those sit in the patient's own cfDNA at heterozygous and
-      # homozygous frequencies, and WISP reports that as tumour fraction. Measured, and
-      # confirmed by re-running the same primaries with their normals. Unconditional hard
+      # homozygous frequencies, and WISP reports that as tumour fraction. Unconditional hard
       # error, no override: a tumour-only primary has no legitimate use here.
       if [ "${mode}" != "PE" ] && ~{if has_normal then "false" else "true"}; then
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
+
+      case "~{scheduler}" in
+        sge) ;;
+        slurm)
+          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
+          ~{if has_nextflow_config then "true" else "false"} || \
+            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+          ;;
+        *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
+      esac
 
       if [ "${#errors[@]}" -gt 0 ]; then
         echo "ERROR: inputs do not satisfy mode ${mode}:" >&2
@@ -290,8 +311,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       ln -s ~{bam} .
       ln -s ~{bai} .
       bam_name=$(basename ~{bam})
-      samtools view -h -@ 2 "${bam_name}" ~{chr} \
-        | awk '/^@/{print;next} $7=="="' \
+      # -e 'rnext == rname' rather than awk on $7=="=": RNEXT is written as "=" when the
+      # mate is on the same reference, but a writer may spell the reference name out instead,
+      # and the samtools expression means what is intended either way.
+      samtools view -h -@ 2 -e 'rnext == rname' "${bam_name}" ~{chr} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
@@ -301,10 +324,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       # -f 1:  paired
       # -F 12: neither read nor mate unmapped
-      # awk:   keep header lines and reads where mate is on a different chromosome
+      # -e:    mate on a different reference; the complement of the fixmate_chr expression
       # No index needed: full-file sequential scan.
-      samtools view -h -@ 2 -f 1 -F 12 ~{bam} \
-        | awk '/^@/{print;next} $7!="="' \
+      samtools view -h -@ 2 -f 1 -F 12 -e 'rnext != rname' ~{bam} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
         | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -
@@ -322,8 +344,8 @@ This section lists command(s) run by purityEstimateV3 workflow
         fi
       }
 
-      # @PG stripping: bwa embeds tab-separated fields in CL: causing htsjdk to produce a
-      # spurious second ID: field -> SAMFormatException in Redux.
+      # @PG stripping: an aligner may embed tab-separated fields in CL:, which makes htsjdk
+      # read a spurious second ID: field and reject the header.
       # Flag fix: per-chromosome fixmate may clear 0x1 while leaving 0x40/0x80 set on
       # discordant-mate reads; htsjdk treats this as a validation error.
       if ~{sanitize_header}; then
@@ -347,11 +369,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       tar -xzf ~{tarball} -C wgts_extracted/
       echo "$(pwd)/wgts_extracted" > output_dir.txt
 
-      # Work out the primary tumour sample ID from the PURPLE filenames rather than trusting a
+      # Derive the primary tumour sample ID from the PURPLE filenames rather than trusting a
       # hand-typed input. SAGE_APPEND reads <tumor_sample_id>.purple.somatic.vcf.gz, so a wrong
-      # ID fails with "invalid path for config: input_vcf = ..." only AFTER REDUX and COBALT
-      # have run. The WG step names these files from the tumour BAM's @RG SM tag, which is
-      # rarely the same string as group_id -- an easy and expensive mistake to make by hand.
+      # ID would fail only after the expensive steps have run. The WG step names these files
+      # from the tumour @RG SM tag, which is rarely the same string as group_id.
       shopt -s nullglob
       ids=()
       for f in wgts_extracted/purple/*.purple.purity.tsv; do
@@ -383,6 +404,198 @@ This section lists command(s) run by purityEstimateV3 workflow
       fi
 
       echo "primary tumour sample ID: ${tumor_sample_id}"
+```
+```
+      set -euo pipefail
+
+      SRC="~{purple_dir}"
+      TUMOR="~{tumor_sample_id}"
+      VCF_NAME="${TUMOR}.purple.somatic.vcf.gz"
+      PREFILTERED_NAME="${TUMOR}.purple.somatic.prefiltered.vcf.gz"
+      SRC_VCF="${SRC}/${VCF_NAME}"
+      DEST="$(pwd)/purple_prefiltered"
+      REPORT="~{outputFileNamePrefix}.primary_site_report.txt"
+      : > "${REPORT}"
+
+      # Anything that stops us filtering is reported and then ignored: an unusable VCF must
+      # not take down a run that would otherwise have produced a result. The caller falls
+      # back to the unfiltered directory.
+      give_up() {
+        echo "NOTE: pre-filtering skipped: $1" >&2
+        { echo "prefiltering: SKIPPED"; echo "reason: $1"; } >> "${REPORT}"
+        echo "-1" > usable_sites.txt
+        echo "0"  > germline_removed.txt
+        echo "${SRC}" > purple_dir_out.txt
+        exit 0
+      }
+
+      [ -s "${SRC_VCF}" ] || give_up "no ${VCF_NAME} in ${SRC}"
+
+      # Sample columns resolved BY NAME, never by position. If the columns are the other way
+      # round a hardcoded index tests the tumour instead of the normal, which removes the
+      # entire call set and yields a confident MRD-negative with no error anywhere.
+      mapfile -t SAMPLES < <(bcftools query -l "${SRC_VCF}")
+      [ "${#SAMPLES[@]}" -eq 2 ] || give_up "expected 2 samples in ${VCF_NAME}, found ${#SAMPLES[@]}"
+      TUM_IDX=""; NORM_IDX=""
+      for i in 0 1; do
+        if [ "${SAMPLES[$i]}" = "${TUMOR}" ]; then TUM_IDX=$i; NORM_IDX=$((1 - i)); fi
+      done
+      [ -n "${TUM_IDX}" ] || give_up "tumour '${TUMOR}' not among VCF samples: ${SAMPLES[*]}"
+
+      HDR=$(bcftools view -h "${SRC_VCF}")
+      has() { grep -q "^##$1=<ID=$2," ```"${HDR}"; }
+
+      # The quality field has been renamed across hmftools versions. ARCBQ is the name the
+      # WISP filter is documented against and what current SAGE emits; ABQ is the older
+      # equivalent and is still what externally supplied VCFs may carry. RABQ is
+      # deliberately NOT accepted: it is the raw, pre-recalibration value, so applying the
+      # threshold to it would filter on the wrong quantity. Better to skip the filter and
+      # say so than to apply it to a field that does not mean what the threshold assumes.
+      QUAL=""
+      if has FORMAT ARCBQ; then QUAL=ARCBQ; elif has FORMAT ABQ; then QUAL=ABQ; fi
+      REPC_FIELDS=()
+      has INFO RC_REPC && REPC_FIELDS+=(RC_REPC)
+      has INFO REP_C   && REPC_FIELDS+=(REP_C)
+
+      GERMLINE_EXPR=""
+      if [ -n "${QUAL}" ]; then
+        GERMLINE_EXPR="(FORMAT/AD[${NORM_IDX}:1]/FORMAT/DP[${NORM_IDX}]) > 0.01 & FORMAT/${QUAL}[${NORM_IDX}:1] > 30"
+      fi
+
+      # tag|mode|expression. mode i = flag when the expression is FALSE, e = flag when TRUE.
+      # The germline filter has to be an exclude: bcftools cannot negate an indexed FORMAT
+      # expression. Tags are what land in the VCF FILTER column, so they are uppercase and
+      # match the condition names the WISP documentation uses.
+      FILTERS=()
+      has INFO MAPPABILITY  && FILTERS+=("MAPPABILITY|i|INFO/MAPPABILITY>=0.5")
+      for rf in "${REPC_FIELDS[@]+"${REPC_FIELDS[@]}"}"; do
+        FILTERS+=("${rf}|i|INFO/${rf}<4 || INFO/${rf}==\".\"")
+      done
+      FILTERS+=("NON_SNV|i|TYPE=\"snp\"")
+      has INFO TIER         && FILTERS+=("LOW_CONFIDENCE|i|INFO/TIER!=\"LOW_CONFIDENCE\"")
+      has INFO NEARBY_INDEL && FILTERS+=("NEARBY_INDEL|i|INFO/NEARBY_INDEL=0")
+      if has INFO SUBCL && has INFO PURPLE_VCN; then
+        FILTERS+=("SUBCLONAL|i|INFO/SUBCL<=0.5 || INFO/PURPLE_VCN>=0.7")
+      fi
+      [ -n "${GERMLINE_EXPR}" ] && FILTERS+=("GERMLINE|e|${GERMLINE_EXPR}")
+
+      {
+        echo "primary sample: ${TUMOR}"
+        echo "vcf:            ${VCF_NAME}"
+        echo "samples:        [0]=${SAMPLES[0]} [1]=${SAMPLES[1]}"
+        echo "normal column:  ${NORM_IDX} (${SAMPLES[$NORM_IDX]})"
+        echo "qual field:     ${QUAL:-NONE, germline filter not applied}"
+        echo "repeat fields:  ${REPC_FIELDS[*]+"${REPC_FIELDS[*]}"}"
+        echo
+        echo "Two of WISP's conditions are measurements on the cfDNA sample and cannot be"
+        echo "evaluated here: average edge distance (AED[1] >= 0.06) and the quality ratio"
+        echo "(RC_QUAL[0]+[1]+[3])/(RC_CNT[0]+[1]+[3]) >= 18. WISP applies both itself, so the"
+        echo "count below is an upper bound on the sites it will actually use."
+        echo
+        printf '%-16s %10s %10s\n' "filter" "remaining" "lost"
+      } >> "${REPORT}"
+
+      WORK=$(mktemp -d)
+      TOTAL=$(bcftools view -H "${SRC_VCF}" | wc -l)
+      printf '%-16s %10s %10s\n' "(total)" "${TOTAL}" "-" >> "${REPORT}"
+
+      # Only this first step DROPS records. Everything after it SOFT-FLAGS: the record set is
+      # fixed here and later steps only add tags to the FILTER column, so the delivered VCF
+      # says per site which conditions it failed instead of silently omitting it. A consumer
+      # selects FILTER="PASS" to get the usable subset, which is also what WISP does with
+      # whatever VCF it is given.
+      bcftools view -i 'FILTER="PASS"' -Oz -o "${WORK}/cur.vcf.gz" "${SRC_VCF}"
+      bcftools index -t -f "${WORK}/cur.vcf.gz"
+      PREV=$(bcftools view -H "${WORK}/cur.vcf.gz" | wc -l)
+      KEPT=${PREV}
+      printf '%-16s %10s %10s\n' "PASS" "${PREV}" "$(( TOTAL - PREV ))" >> "${REPORT}"
+
+      GERMLINE_LOST=""
+      for entry in "${FILTERS[@]}"; do
+        tag="${entry%%|*}"; rest="${entry#*|}"; mode="${rest%%|*}"; expr="${rest#*|}"
+        # A field can exist in the header and still be unusable by this bcftools build, so
+        # a failing expression is reported and skipped rather than killing the run.
+        if ! bcftools filter -s "${tag}" -m + "-${mode}" "${expr}" \
+             -Oz -o "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz" 2>"${WORK}/err"; then
+          printf '%-16s %10s %10s\n' "${tag}" "SKIPPED" "$(head -1 "${WORK}/err" | cut -c1-40)" >> "${REPORT}"
+          continue
+        fi
+        mv "${WORK}/next.vcf.gz" "${WORK}/cur.vcf.gz"
+        bcftools index -t -f "${WORK}/cur.vcf.gz"
+        # "remaining" is how many records are still PASS, not how many are left in the file.
+        n=$(bcftools view -H -i 'FILTER="PASS"' "${WORK}/cur.vcf.gz" | wc -l)
+        printf '%-16s %10s %10s\n' "${tag}" "${n}" "$(( PREV - n ))" >> "${REPORT}"
+
+        if [ "${tag}" = "GERMLINE" ]; then GERMLINE_LOST=$(( PREV - n )); fi
+        PREV=${n}
+      done
+      USABLE=${PREV}
+      echo "${USABLE}" > usable_sites.txt
+      echo "${GERMLINE_LOST:-0}" > germline_removed.txt
+
+      # Copy rather than write in place: the source is another task's output or a tarball
+      # extraction, and neither may be mutated.
+      mkdir -p "${DEST}"
+      cp -r "${SRC}/." "${DEST}/"
+      cp "${WORK}/cur.vcf.gz" "${DEST}/${PREFILTERED_NAME}"
+      bcftools index -t -f "${DEST}/${PREFILTERED_NAME}"
+      echo "${DEST}" > purple_dir_out.txt
+
+      { echo
+        echo "sites usable for MRD: ${USABLE} of ${TOTAL}"
+        echo "written as ${PREFILTERED_NAME}, alongside the unmodified ${VCF_NAME}."
+        echo "That file holds all ${KEPT} PASS-in-purple records; the ones that failed a"
+        echo "condition carry it in the FILTER column rather than being dropped, so select"
+        echo "FILTER=\"PASS\" for the ${USABLE} usable sites."
+      } >> "${REPORT}"
+
+      rm -rf "${WORK}"
+      cat "${REPORT}" >&2
+```
+```
+      set -euo pipefail
+      # Stage symlinks and dereference them into the archive, so the WG output is not copied
+      # a second time. alignments/ is excluded on purpose: it holds full REDUX BAMs, and a
+      # chained PE run reads the primary outputs from disk rather than from this archive.
+      stage="$(pwd)/stage"
+      mkdir -p "${stage}"
+
+      # Collect only the directories that exist, so a run that legitimately produces fewer
+      # of them does not fail at the very last step after hours of compute.
+      tar_dirs=()
+      for d in amber cobalt pave sage; do
+        if [ -d "~{wgts_dir}/${d}" ]; then
+          ln -s "~{wgts_dir}/${d}" "${stage}/${d}"
+          tar_dirs+=("${d}/")
+        else
+          echo "note: ${d}/ not present in the output, omitting from the archive" >&2
+        fi
+      done
+      if [ -d "~{purple_dir}" ]; then
+        ln -s "~{purple_dir}" "${stage}/purple"
+        tar_dirs+=("purple/")
+      else
+        echo "note: purple/ not present, omitting from the archive" >&2
+      fi
+      if [ "${#tar_dirs[@]}" -eq 0 ]; then
+        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
+        exit 1
+      fi
+
+      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
+      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
+      # germline calling on and it cannot be switched off from configuration.
+      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files.
+      exclude_args=()
+      if ! ~{include_germline_outputs}; then
+        exclude_args=(--exclude='*germline*')
+      fi
+
+      # -h dereferences the staged symlinks; without it the archive holds four links.
+      tar -czhf ~{outputFileNamePrefix}.wgts.tar.gz \
+          "${exclude_args[@]}" \
+          -C "${stage}" \
+          "${tar_dirs[@]}"
 ```
 ```
         set -euo pipefail
@@ -477,9 +690,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
-      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
-      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
+      # obscurely inside plugin resolution. Prefer the module's value, falling back to a
+      # sibling directory that does have plugins/.
       nxf_home="~{nextflow_home}"
       if [ ! -d "${nxf_home}/plugins" ]; then
         for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
@@ -496,15 +709,37 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "       ${ONCOANALYSER_ROOT:-<ONCOANALYSER_ROOT unset>}/nextflow_home*" >&2
         exit 1
       }
-      export NXF_HOME="${nxf_home}"
+      # NXF_HOME must be WRITABLE. The nextflow launcher does mkdir -p $NXF_HOME/tmp and the
+      # local secrets provider wants $NXF_HOME/secrets, but a module tree is read-only, so
+      # pointing NXF_HOME straight at it fails with "Read-only file system". Give nextflow a
+      # writable directory in the task workdir and symlink the cached plugins into it: the
+      # plugins are only read, and nothing is written to the module.
+      nxf_home_rw="$(pwd)/nxf_home"
+      mkdir -p "${nxf_home_rw}"
+      ln -sfn "${nxf_home}/plugins" "${nxf_home_rw}/plugins"
+      export NXF_HOME="${nxf_home_rw}"
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
-      bin_dir="$(pwd)/bin"
-      mkdir -p "${bin_dir}"
-      cp ~{qsub_wrapper} "${bin_dir}/qsub"
-      chmod +x "${bin_dir}/qsub"
-      export PATH="${bin_dir}:$PATH"
+      # The SGE executor embeds h_rss/mem_free directly in .command.run, where configuration
+      # cannot reach them, so a shim ahead of qsub on PATH rewrites the request. The Slurm
+      # executor emits --mem and --cpus-per-task from the memory and cpus directives, so it
+      # needs no wrapper.
+      if [ "~{scheduler}" = "sge" ]; then
+        bin_dir="$(pwd)/bin"
+        mkdir -p "${bin_dir}"
+        cp ~{submit_wrapper} "${bin_dir}/qsub"
+        chmod +x "${bin_dir}/qsub"
+        export PATH="${bin_dir}:$PATH"
+      fi
+
+      # One -c per overlay, in the order given: later files win, which is how a site config
+      # overrides the shared one.
+      configs=(~{sep=" " nextflow_config})
+      config_args=()
+      for cfg in "${configs[@]}"; do
+        config_args+=(-c "${cfg}")
+      done
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
@@ -523,49 +758,15 @@ This section lists command(s) run by purityEstimateV3 workflow
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{oicr_config} \
+          "${config_args[@]}" \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume
 
       echo "${abs_outdir}/~{group_id}" > output_dir.txt
 
-      # alignments/ is excluded on purpose: it holds full REDUX BAMs. A chained PE run reads
-      # the primary outputs from disk, not from this tarball.
-      #
-      # Collect only the directories that exist, so a run that legitimately produces fewer
-      # of them (e.g. tumour-only, where nothing germline is written) does not fail at the
-      # very last step after hours of compute.
-      tar_dirs=()
-      for d in amber cobalt purple pave sage; do
-        if [ -d "${abs_outdir}/~{group_id}/${d}" ]; then
-          tar_dirs+=("${d}/")
-        else
-          echo "note: ${d}/ not present in the output, omitting from the tarball" >&2
-        fi
-      done
-      if [ "${#tar_dirs[@]}" -eq 0 ]; then
-        echo "ERROR: none of amber/ cobalt/ purple/ pave/ sage/ were produced" >&2
-        exit 1
-      fi
-
-      # Germline calls are not part of the MRD deliverable and WISP does not use them, so
-      # they are dropped from the archive. They ARE still generated: oncoanalyser hardcodes
-      # germline calling on (the enable_germline literal in workflows/wgts.nf) and it cannot
-      # be switched off from configuration. Disabling it would need a source patch and would
-      # save only about 2 minutes, so removing the outputs is the better trade.
-      # The pattern catches sage/germline/, pave/germline/ and the PURPLE germline files;
-      # verified against a real archive that nothing else matches it.
-      exclude_args=()
-      if ! ~{include_germline_outputs}; then
-        exclude_args=(--exclude='*germline*')
-      fi
-
-      tar -czf ~{outdir}.wgts.tar.gz \
-          "${exclude_args[@]}" \
-          -C "${abs_outdir}/~{group_id}" \
-          "${tar_dirs[@]}"
-
+      # The WG results are archived by pack_wgts, not here, so that the archive can be built
+      # after pre_filtering and carry the prefiltered somatic VCF alongside the original.
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \
           pipeline_info/
@@ -608,9 +809,34 @@ This section lists command(s) run by purityEstimateV3 workflow
       #
       # amber_dir / cobalt_dir / sage_append_dir must never appear on the longitudinal
       # sample: oncoanalyser treats that as a fatal input clash.
+      # Which of the primary's two somatic VCFs SAGE_APPEND works from. oncoanalyser resolves
+      # it by EXACT filename -- file(purple_dir).resolve("<id>.purple.somatic.vcf.gz") -- so
+      # using the prefiltered one means staging a copy of the directory in which that name
+      # holds the prefiltered content. No filtering happens here; the WG stage wrote both.
+      purple_dir="~{primary_purple_dir}"
+      if ~{use_primary_filters}; then
+        prefiltered="${purple_dir}/~{tumor_sample_id}.purple.somatic.prefiltered.vcf.gz"
+        if [ -s "${prefiltered}" ]; then
+          staged="${WORKDIR}/purple_staged"
+          mkdir -p "${staged}"
+          cp -r "${purple_dir}/." "${staged}/"
+          cp "${prefiltered}" "${staged}/~{tumor_sample_id}.purple.somatic.vcf.gz"
+          if [ -f "${prefiltered}.tbi" ]; then
+            cp "${prefiltered}.tbi" "${staged}/~{tumor_sample_id}.purple.somatic.vcf.gz.tbi"
+          fi
+          purple_dir="${staged}"
+          echo "using the prefiltered primary VCF" >&2
+        else
+          # A WG tarball made before pre-filtering existed has no prefiltered VCF. Warn and
+          # carry on with the full call set rather than failing a run that is still valid.
+          echo "WARNING: no ~{tumor_sample_id}.purple.somatic.prefiltered.vcf.gz in" >&2
+          echo "         ${purple_dir}; using the full call set instead." >&2
+        fi
+      fi
+
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
-        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,~{wgts_outdir}/purple/"
+        echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,${purple_dir}"
         echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
       } > samplesheet_purity.csv
 
@@ -625,9 +851,9 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OFFLINE=true
       export NXF_OPTS="-Xms512m -Xmx8g"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
-      # NXF_HOME must hold the pre-cached nf-schema plugin; with NXF_OFFLINE=true a wrong one
-      # fails obscurely inside plugin resolution. The module's NEXTFLOW_HOME currently points
-      # at a directory that does not exist, so fall back to the sibling that has plugins/.
+      # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
+      # obscurely inside plugin resolution. Prefer the module's value, falling back to a
+      # sibling directory that does have plugins/.
       nxf_home="~{nextflow_home}"
       if [ ! -d "${nxf_home}/plugins" ]; then
         for cand in "${ONCOANALYSER_ROOT:-}"/nextflow_home*; do
@@ -644,14 +870,36 @@ This section lists command(s) run by purityEstimateV3 workflow
         echo "       ${ONCOANALYSER_ROOT:-<ONCOANALYSER_ROOT unset>}/nextflow_home*" >&2
         exit 1
       }
-      export NXF_HOME="${nxf_home}"
+      # NXF_HOME must be WRITABLE. The nextflow launcher does mkdir -p $NXF_HOME/tmp and the
+      # local secrets provider wants $NXF_HOME/secrets, but a module tree is read-only, so
+      # pointing NXF_HOME straight at it fails with "Read-only file system". Give nextflow a
+      # writable directory in the task workdir and symlink the cached plugins into it: the
+      # plugins are only read, and nothing is written to the module.
+      nxf_home_rw="$(pwd)/nxf_home"
+      mkdir -p "${nxf_home_rw}"
+      ln -sfn "${nxf_home}/plugins" "${nxf_home_rw}/plugins"
+      export NXF_HOME="${nxf_home_rw}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 
-      bin_dir="$(pwd)/bin"
-      mkdir -p "${bin_dir}"
-      cp ~{qsub_wrapper} "${bin_dir}/qsub"
-      chmod +x "${bin_dir}/qsub"
-      export PATH="${bin_dir}:$PATH"
+      # The SGE executor embeds h_rss/mem_free directly in .command.run, where configuration
+      # cannot reach them, so a shim ahead of qsub on PATH rewrites the request. The Slurm
+      # executor emits --mem and --cpus-per-task from the memory and cpus directives, so it
+      # needs no wrapper.
+      if [ "~{scheduler}" = "sge" ]; then
+        bin_dir="$(pwd)/bin"
+        mkdir -p "${bin_dir}"
+        cp ~{submit_wrapper} "${bin_dir}/qsub"
+        chmod +x "${bin_dir}/qsub"
+        export PATH="${bin_dir}:$PATH"
+      fi
+
+      # One -c per overlay, in the order given: later files win, which is how a site config
+      # overrides the shared one.
+      configs=(~{sep=" " nextflow_config})
+      config_args=()
+      for cfg in "${configs[@]}"; do
+        config_args+=(-c "${cfg}")
+      done
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
@@ -671,7 +919,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
-          -c ~{oicr_config} \
+          "${config_args[@]}" \
           "${stub_args[@]}" \
           -ansi-log false \
           -resume

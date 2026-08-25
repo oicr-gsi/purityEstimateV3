@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-19
+### Added
+- `doFixmate`. Consulted only when `run_redux` is true and the sample is Illumina: leave it
+  true for alignments that lack mate CIGAR tags, set it false when the aligner already wrote
+  them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter. The inputs are still
+  merged, since REDUX takes one alignment file per sample.
+- `scheduler` (`sge` or `slurm`, validated) and `nextflow_config`. The submit wrapper is
+  installed only for `sge`, where the executor embeds `h_rss`/`mem_free` directly in
+  `.command.run`; the Slurm executor emits `--mem` and `--cpus-per-task` from the memory and
+  cpus directives. `nextflow_config` is a list, each entry passed with its own `-c` in order,
+  so a shared overlay and a per-site one compose. A `slurm` run must supply one, because the
+  config the module ships selects the SGE executor.
+- `pre_filtering`, which filters the primary's somatic VCF in WG and WG_PE mode and reports
+  what each filter cost. Two filter sets, both primary-side: the **primary filters** WISP
+  uses to decide which sites can carry MRD signal (mappability, repeat count, SNV only,
+  tier, nearby indel, subclonal), and the **germline filter** which WISP
+  documents but never applies.
+  The result is written as `<sample>.purple.somatic.prefiltered.vcf.gz` **beside the
+  untouched original**, and both go into the WG archive. Only the PASS step drops records;
+  the rest add their name to the VCF FILTER column, so `FILTER="PASS"` selects the usable
+  sites.
+- `use_primary_filters`. In PE and WG_PE mode this chooses whether the plasma stage works
+  from the prefiltered VCF or the full call set; no filtering happens in the PE stage.
+- `pack_wgts`, which archives the WG results. Split out of `run_wgts` so that it runs after
+  `pre_filtering` and can therefore carry both somatic VCFs. It stages symlinks and
+  dereferences them into the archive, so the WG output is not copied a second time.
+
 ## [1.0.0] - 2026-08-10
 ### Added
 - First version. Wraps nf-core/oncoanalyser 3.0.0-rc.3 for tumour-informed MRD

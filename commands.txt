@@ -102,9 +102,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
       # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
       # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
-      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
-      # NSLOTS are what the scheduler actually granted.
-      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
       [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
@@ -149,9 +152,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
       # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
       # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
-      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
-      # NSLOTS are what the scheduler actually granted.
-      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
       [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
@@ -183,9 +189,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
       # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
       # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
-      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
-      # NSLOTS are what the scheduler actually granted.
-      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
       [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then
@@ -212,9 +221,12 @@ This section lists command(s) run by purityEstimateV3 workflow
       # The note makes a misconfigured backend visible in the log instead of as a mystery.
       # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
       # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
-      # the whole node and the cap would silently do nothing. SLURM_CPUS_PER_TASK and SGE's
-      # NSLOTS are what the scheduler actually granted.
-      avail=${SLURM_CPUS_PER_TASK:-${NSLOTS:-}}
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
       [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
       threads=~{threads}
       if [ "${avail}" -lt "${threads}" ]; then

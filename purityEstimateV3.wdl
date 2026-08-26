@@ -133,7 +133,7 @@ workflow purityEstimateV3 {
             run_control         = run_control,
             has_controls        = defined(controls),
             scheduler           = scheduler,
-            has_nextflow_config = defined(nextflow_config)
+            nextflow_config     = select_first([nextflow_config, []])
     }
 
     # Read sample ID and platform from one header per sample. Cheap: the header is read
@@ -578,7 +578,7 @@ task validate_inputs {
         Boolean run_control
         Boolean has_controls
         String  scheduler
-        Boolean has_nextflow_config
+        Array[String] nextflow_config = []
         Int memory  = 1
         Int timeout = 1
     }
@@ -593,7 +593,7 @@ task validate_inputs {
         run_control:         "Whether control purity estimation was requested"
         has_controls:        "Whether the controls array was supplied"
         scheduler:           "Requested batch scheduler"
-        has_nextflow_config: "Whether nextflow_config was supplied"
+        nextflow_config:     "Extra nextflow config files, checked for readability"
         memory:              "Memory in GB"
         timeout:             "Wall-clock timeout in hours"
     }
@@ -639,11 +639,23 @@ task validate_inputs {
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
 
+      # These paths are String, not File, so Cromwell neither localizes nor checks them; a
+      # wrong one would otherwise surface only when nextflow parses -c, by which point the
+      # alignment work is done. An entry holding an env var is resolved in the head job, where
+      # the module is loaded, so here it can only be counted.
+      config_count=0
+      while IFS= read -r cfg; do
+        [ -n "${cfg}" ] || continue
+        config_count=$((config_count + 1))
+        case "${cfg}" in *'$'*) continue ;; esac
+        [ -f "${cfg}" ] && [ -r "${cfg}" ] || errors+=("nextflow_config not readable: ${cfg}")
+      done < "~{write_lines(nextflow_config)}"
+
       case "~{scheduler}" in
         sge) ;;
         slurm)
           # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
-          ~{if has_nextflow_config then "true" else "false"} || \
+          [ "${config_count}" -gt 0 ] || \
             errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
           ;;
         *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;

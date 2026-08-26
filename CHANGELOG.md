@@ -30,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.command.run`; the Slurm executor emits `--mem` and `--cpus-per-task` from the memory and
   cpus directives. `nextflow_config` is a list, each entry passed with its own `-c` in order,
   so a shared overlay and a per-site one compose. A `slurm` run must supply one, because the
-  config the module ships selects the SGE executor.
+  config the module ships selects the SGE executor. `validate_inputs` checks that each entry
+  is a readable file, so a wrong path fails before any alignment work.
 - `pre_filtering`, which filters the primary's somatic VCF in WG and WG_PE mode and reports
   what each filter cost. Two filter sets, both primary-side: the **primary filters** WISP
   uses to decide which sites can carry MRD signal (mappability, repeat count, SNV only,

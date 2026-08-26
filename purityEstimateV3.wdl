@@ -1702,11 +1702,16 @@ task run_wgts {
       # NXF_HOME must be WRITABLE. The nextflow launcher does mkdir -p $NXF_HOME/tmp and the
       # local secrets provider wants $NXF_HOME/secrets, but a module tree is read-only, so
       # pointing NXF_HOME straight at it fails with "Read-only file system". Give nextflow a
-      # writable directory in the task workdir and symlink the cached plugins into it: the
-      # plugins are only read, and nothing is written to the module.
+      # writable directory in the task workdir. plugins/ itself must be a real directory:
+      # nextflow calls createDirectories on it, which rejects a symlink even when it resolves
+      # to a directory. Its entries are only read, so they can be symlinks into the module.
       nxf_home_rw="$(pwd)/nxf_home"
-      mkdir -p "${nxf_home_rw}"
-      ln -sfn "${nxf_home}/plugins" "${nxf_home_rw}/plugins"
+      mkdir -p "${nxf_home_rw}/plugins"
+      for plugin in "${nxf_home}"/plugins/*; do
+        if [ -e "${plugin}" ]; then
+          ln -sfn "${plugin}" "${nxf_home_rw}/plugins/"
+        fi
+      done
       export NXF_HOME="${nxf_home_rw}"
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
@@ -1930,11 +1935,16 @@ task run_purity_estimate {
       # NXF_HOME must be WRITABLE. The nextflow launcher does mkdir -p $NXF_HOME/tmp and the
       # local secrets provider wants $NXF_HOME/secrets, but a module tree is read-only, so
       # pointing NXF_HOME straight at it fails with "Read-only file system". Give nextflow a
-      # writable directory in the task workdir and symlink the cached plugins into it: the
-      # plugins are only read, and nothing is written to the module.
+      # writable directory in the task workdir. plugins/ itself must be a real directory:
+      # nextflow calls createDirectories on it, which rejects a symlink even when it resolves
+      # to a directory. Its entries are only read, so they can be symlinks into the module.
       nxf_home_rw="$(pwd)/nxf_home"
-      mkdir -p "${nxf_home_rw}"
-      ln -sfn "${nxf_home}/plugins" "${nxf_home_rw}/plugins"
+      mkdir -p "${nxf_home_rw}/plugins"
+      for plugin in "${nxf_home}"/plugins/*; do
+        if [ -e "${plugin}" ]; then
+          ln -sfn "${plugin}" "${nxf_home_rw}/plugins/"
+        fi
+      done
       export NXF_HOME="${nxf_home_rw}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 

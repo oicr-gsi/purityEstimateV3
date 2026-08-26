@@ -1690,7 +1690,10 @@ task run_wgts {
       fi
 
       export NXF_OFFLINE=true
-      export NXF_OPTS="-Xms512m -Xmx8g"
+      # -XX:-UseContainerSupport: the JVM's cgroup probe aborts startup on a node where it
+      # cannot enumerate the controllers. The heap is pinned here, so nothing depends on the
+      # limits that probe would report.
+      export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
@@ -1923,7 +1926,10 @@ task run_purity_estimate {
       fi
 
       export NXF_OFFLINE=true
-      export NXF_OPTS="-Xms512m -Xmx8g"
+      # -XX:-UseContainerSupport: the JVM's cgroup probe aborts startup on a node where it
+      # cannot enumerate the controllers. The heap is pinned here, so nothing depends on the
+      # limits that probe would report.
+      export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a

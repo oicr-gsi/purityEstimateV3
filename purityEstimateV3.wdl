@@ -133,7 +133,7 @@ workflow purityEstimateV3 {
             run_control         = run_control,
             has_controls        = defined(controls),
             scheduler           = scheduler,
-            has_nextflow_config = defined(nextflow_config)
+            nextflow_config     = select_first([nextflow_config, []])
     }
 
     # Read sample ID and platform from one header per sample. Cheap: the header is read
@@ -164,15 +164,48 @@ workflow purityEstimateV3 {
     # detection, for data with a missing or wrong PL tag.
     if (defined(tumor_alignments)) {
         String tumor_platform  = select_first([sequencing_platform, tumor_info.platform])
-        Boolean tumor_fixmate  = run_redux && doFixmate && tumor_platform == "illumina"
+        # Only probe when the answer can change the decision: doFixmate=true always
+        # fixmates, and a non-Illumina sample never does.
+        if (run_redux && !doFixmate && tumor_platform == "illumina") {
+            call probe_mc_tags as probe_tumor {
+                input: bam = select_first([tumor_alignments])[0].aln
+            }
+        }
+        # Correct only the dangerous direction. Skipping fixmate is honoured when the tags
+        # are really there; when they are not, fixmate runs anyway rather than letting
+        # REDUX mis-mark duplicates.
+        Boolean tumor_fixmate = run_redux && tumor_platform == "illumina"
+                                 && (doFixmate || !select_first([probe_tumor.has_mc_tags, true]))
     }
     if (defined(normal_alignments)) {
         String normal_platform = select_first([sequencing_platform, normal_info.platform])
-        Boolean normal_fixmate = run_redux && doFixmate && normal_platform == "illumina"
+        # Only probe when the answer can change the decision: doFixmate=true always
+        # fixmates, and a non-Illumina sample never does.
+        if (run_redux && !doFixmate && normal_platform == "illumina") {
+            call probe_mc_tags as probe_normal {
+                input: bam = select_first([normal_alignments])[0].aln
+            }
+        }
+        # Correct only the dangerous direction. Skipping fixmate is honoured when the tags
+        # are really there; when they are not, fixmate runs anyway rather than letting
+        # REDUX mis-mark duplicates.
+        Boolean normal_fixmate = run_redux && normal_platform == "illumina"
+                                 && (doFixmate || !select_first([probe_normal.has_mc_tags, true]))
     }
     if (defined(longitudinal_alignments)) {
         String longitudinal_platform = select_first([sequencing_platform, longitudinal_info.platform])
-        Boolean longitudinal_fixmate = run_redux && doFixmate && longitudinal_platform == "illumina"
+        # Only probe when the answer can change the decision: doFixmate=true always
+        # fixmates, and a non-Illumina sample never does.
+        if (run_redux && !doFixmate && longitudinal_platform == "illumina") {
+            call probe_mc_tags as probe_longitudinal {
+                input: bam = select_first([longitudinal_alignments])[0].aln
+            }
+        }
+        # Correct only the dangerous direction. Skipping fixmate is honoured when the tags
+        # are really there; when they are not, fixmate runs anyway rather than letting
+        # REDUX mis-mark duplicates.
+        Boolean longitudinal_fixmate = run_redux && longitudinal_platform == "illumina"
+                                 && (doFixmate || !select_first([probe_longitudinal.has_mc_tags, true]))
     }
 
     # The tumour sample ID is resolved per mode, NOT here. A workflow-level declaration is
@@ -216,7 +249,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = flatten([flatten(fixmate_tumor_chr.fixed_bam), fixmate_tumor_disc.fixed_bam]),
                     bais = flatten([flatten(fixmate_tumor_chr.fixed_bai), fixmate_tumor_disc.fixed_bai]),
-                    sanitize_header = true
+                    repair_flags = true,
+                    strip_bad_pg = true
             }
         }
 
@@ -226,7 +260,7 @@ workflow purityEstimateV3 {
                 input:
                     bams = tumor_staged_bam,
                     bais = tumor_staged_bai,
-                    sanitize_header = run_redux
+                    strip_bad_pg   = run_redux
             }
         }
 
@@ -260,7 +294,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = flatten([flatten(fixmate_normal_chr.fixed_bam), fixmate_normal_disc.fixed_bam]),
                     bais = flatten([flatten(fixmate_normal_chr.fixed_bai), fixmate_normal_disc.fixed_bai]),
-                    sanitize_header = true
+                    repair_flags = true,
+                    strip_bad_pg = true
             }
         }
 
@@ -269,7 +304,7 @@ workflow purityEstimateV3 {
                 input:
                     bams = normal_staged_bam,
                     bais = normal_staged_bai,
-                    sanitize_header = run_redux
+                    strip_bad_pg   = run_redux
             }
         }
 
@@ -303,7 +338,8 @@ workflow purityEstimateV3 {
                 input:
                     bams = flatten([flatten(fixmate_longitudinal_chr.fixed_bam), fixmate_longitudinal_disc.fixed_bam]),
                     bais = flatten([flatten(fixmate_longitudinal_chr.fixed_bai), fixmate_longitudinal_disc.fixed_bai]),
-                    sanitize_header = true
+                    repair_flags = true,
+                    strip_bad_pg = true
             }
         }
 
@@ -312,7 +348,7 @@ workflow purityEstimateV3 {
                 input:
                     bams = longitudinal_staged_bam,
                     bais = longitudinal_staged_bai,
-                    sanitize_header = run_redux
+                    strip_bad_pg   = run_redux
             }
         }
 
@@ -542,7 +578,7 @@ task validate_inputs {
         Boolean run_control
         Boolean has_controls
         String  scheduler
-        Boolean has_nextflow_config
+        Array[String] nextflow_config = []
         Int memory  = 1
         Int timeout = 1
     }
@@ -557,7 +593,7 @@ task validate_inputs {
         run_control:         "Whether control purity estimation was requested"
         has_controls:        "Whether the controls array was supplied"
         scheduler:           "Requested batch scheduler"
-        has_nextflow_config: "Whether nextflow_config was supplied"
+        nextflow_config:     "Extra nextflow config files, checked for readability"
         memory:              "Memory in GB"
         timeout:             "Wall-clock timeout in hours"
     }
@@ -603,11 +639,23 @@ task validate_inputs {
         errors+=("mode ${mode} requires normal_alignments: without a matched normal the primary is called tumour-only, germline variants are not subtracted, and WISP reports a FALSE MRD-POSITIVE. There is deliberately no override")
       fi
 
+      # These paths are String, not File, so Cromwell neither localizes nor checks them; a
+      # wrong one would otherwise surface only when nextflow parses -c, by which point the
+      # alignment work is done. An entry holding an env var is resolved in the head job, where
+      # the module is loaded, so here it can only be counted.
+      config_count=0
+      while IFS= read -r cfg; do
+        [ -n "${cfg}" ] || continue
+        config_count=$((config_count + 1))
+        case "${cfg}" in *'$'*) continue ;; esac
+        [ -f "${cfg}" ] && [ -r "${cfg}" ] || errors+=("nextflow_config not readable: ${cfg}")
+      done < "~{write_lines(nextflow_config)}"
+
       case "~{scheduler}" in
         sge) ;;
         slurm)
           # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
-          ~{if has_nextflow_config then "true" else "false"} || \
+          [ "${config_count}" -gt 0 ] || \
             errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
           ;;
         *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
@@ -730,6 +778,26 @@ task cram_to_bam {
 
     command <<<
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       # Cromwell localizes the CRAM and its index into different directories, so symlink
       # both here with matching basenames for samtools to find the index.
       ln -s ~{aln} ./input.cram
@@ -740,8 +808,8 @@ task cram_to_bam {
         exit 1
       }
 
-      samtools view -@ ~{threads} -T ~{cram_reference} -b -o converted.bam ./input.cram
-      samtools index -@ ~{threads} converted.bam
+      samtools view -@ "${threads}" -T ~{cram_reference} -b -o converted.bam ./input.cram
+      samtools index -@ "${threads}" converted.bam
     >>>
 
     output {
@@ -751,6 +819,60 @@ task cram_to_bam {
 
     runtime {
         cpu:     threads
+        timeout: "~{timeout}"
+        memory:  "~{memory} GB"
+        modules: modules
+    }
+}
+
+# Does this alignment already carry mate CIGAR tags?
+#
+# REDUX needs MC tags to mark duplicates correctly, and fixmate is how they get there. Some
+# aligners write them already, in which case the per-chromosome fixmate scatter is pure cost.
+# Deciding that from the data rather than from an input means doFixmate=false cannot silently
+# hand REDUX an alignment it will mis-process.
+#
+# Reads records rather than the header, so a bounded slice is used: MC is per-read, and the
+# question is whether the writer emits it at all, which the first records answer.
+task probe_mc_tags {
+    input {
+        File   bam
+        Int    records = 100000
+        String modules = "samtools/1.16.1"
+        Int memory  = 4
+        Int timeout = 1
+    }
+
+    parameter_meta {
+        bam:     "Alignment to inspect. Always a BAM, because the probe is only reached for platforms that get fixmate, and those inputs are BAMs; so no reference is needed to read records"
+        records: "How many leading records to inspect"
+        modules: "Environment modules to load (samtools required)"
+        memory:  "Memory in GB"
+        timeout: "Wall-clock timeout in hours"
+    }
+
+    command <<<
+      set -euo pipefail
+      # head closes the pipe, and grep -c exits 1 when it matches nothing, so neither can be
+      # allowed to fail the task.
+      set +o pipefail
+      n=$(samtools view "~{bam}" | head -~{records} | grep -c 'MC:Z:' || true)
+      set -o pipefail
+      if [ "${n}" -gt 0 ]; then
+        echo "true" > has_mc_tags.txt
+        echo "mate CIGAR tags present (${n} in the first ~{records} records)" >&2
+      else
+        echo "false" > has_mc_tags.txt
+        echo "no mate CIGAR tags in the first ~{records} records" >&2
+      fi
+    >>>
+
+    output {
+        Boolean has_mc_tags = read_boolean("has_mc_tags.txt")
+    }
+
+    runtime {
+        cpu:     1
         timeout: "~{timeout}"
         memory:  "~{memory} GB"
         modules: modules
@@ -783,6 +905,26 @@ task fixmate_chr {
 
     command <<<
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       # Symlink BAM and BAI preserving the original filenames so samtools can
       # locate the index automatically (it derives the index path from the BAM
       # path; renaming would break that lookup).
@@ -795,7 +937,7 @@ task fixmate_chr {
       samtools view -h -@ 2 -e 'rnext == rname' "${bam_name}" ~{chr} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
-        | samtools sort -@ ~{threads} -m 2G -o ~{chr}.fixedmate.bam -
+        | samtools sort -@ "${threads}" -m 2G -o ~{chr}.fixedmate.bam -
       samtools index ~{chr}.fixedmate.bam
     >>>
 
@@ -836,6 +978,26 @@ task fixmate_discordant {
 
     command <<<
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       # -f 1:  paired
       # -F 12: neither read nor mate unmapped
       # -e:    mate on a different reference; the complement of the fixmate_chr expression
@@ -843,7 +1005,7 @@ task fixmate_discordant {
       samtools view -h -@ 2 -f 1 -F 12 -e 'rnext != rname' ~{bam} \
         | samtools sort -n -u -@ 2 -m 1G - \
         | samtools fixmate -m -u -@ 2 - - \
-        | samtools sort -@ ~{threads} -m 2G -o discordant.fixedmate.bam -
+        | samtools sort -@ "${threads}" -m 2G -o discordant.fixedmate.bam -
       samtools index discordant.fixedmate.bam
     >>>
 
@@ -860,14 +1022,20 @@ task fixmate_discordant {
     }
 }
 
-# Merge coordinate-sorted BAMs. Used for two different things:
-#   sanitize_header=true   fixmate shards from one sample (chromosome slices + discordant)
-#   sanitize_header=false  whole alignments from several flowcells/lanes
+# Merge coordinate-sorted BAMs, and check the header is fit for what consumes it.
+#
+#   repair_flags     per-chromosome fixmate can clear 0x1 while leaving 0x40/0x80 set on
+#                    discordant-mate reads, which htsjdk treats as a validation error. Only
+#                    the fixmate path needs this.
+#   strip_bad_pg     set when the output feeds REDUX, i.e. htsjdk. An @PG line is only
+#                    stripped if it is ACTUALLY malformed, so a well-formed header keeps its
+#                    provenance; see the detection in the command.
 task merge_bams {
     input {
         Array[File] bams
         Array[File] bais
-        Boolean     sanitize_header = true
+        Boolean     repair_flags = false
+        Boolean     strip_bad_pg = false
         String      modules = "samtools/1.16.1"
         Int threads = 8
         Int memory  = 16
@@ -875,45 +1043,85 @@ task merge_bams {
     }
 
     parameter_meta {
-        bams:            "Coordinate-sorted BAMs to merge"
-        bais:            "Index files corresponding to each entry in bams (same order)"
-        sanitize_header: "When true, strip @PG lines and repair unpaired-read flags. Needed after per-chromosome fixmate, and harmful for vendor alignments because it discards their @PG provenance"
-        modules:         "Environment modules to load (samtools required)"
-        threads:         "Number of samtools threads"
-        memory:          "Memory in GB"
-        timeout:         "Wall-clock timeout in hours"
+        bams:           "Coordinate-sorted BAMs to merge"
+        bais:           "Index files corresponding to each entry in bams (same order)"
+        repair_flags:   "Repair reads whose paired flag was cleared while the first/second-in-pair flags were left set. Needed only after per-chromosome fixmate"
+        strip_bad_pg:   "Check the @PG header and strip it if malformed. Set when the output feeds REDUX; a well-formed header is left alone"
+        modules:        "Environment modules to load (samtools required)"
+        threads:        "Number of samtools threads"
+        memory:         "Memory in GB"
+        timeout:        "Wall-clock timeout in hours"
     }
 
     command <<<
       set -euo pipefail
+      # Use no more threads than the scheduler actually allocated. A backend that does not
+      # map the cpu runtime attribute leaves samtools oversubscribed on one core, which with
+      # its block queues is far slower than simply running single-threaded -- and silently so.
+      # The note makes a misconfigured backend visible in the log instead of as a mystery.
+      # Prefer the scheduler's own statement of the allocation over nproc. Slurm only
+      # constrains CPU affinity when configured to, so with a CFS quota instead nproc reports
+      # the whole node and the cap would silently do nothing.
+      # SLURM_CPUS_PER_TASK exists only when --cpus-per-task was passed -- which is precisely
+      # what a backend missing that flag does not do -- so SLURM_CPUS_ON_NODE is the one to
+      # rely on: it is always set, and equals the allocation for a one-task job. NSLOTS is
+      # SGE's equivalent.
+      avail=${SLURM_CPUS_PER_TASK:-${SLURM_CPUS_ON_NODE:-${NSLOTS:-}}}
+      [ -n "${avail}" ] || avail=$(nproc 2>/dev/null || echo 1)
+      threads=~{threads}
+      if [ "${avail}" -lt "${threads}" ]; then
+        echo "NOTE: ~{threads} threads requested but only ${avail} cpu(s) allocated; using ${avail}." >&2
+        echo "      If this is not deliberate, the backend is not mapping the cpu attribute." >&2
+        threads=${avail}
+      fi
+
       bam_list=(~{sep=" " bams})
+
+      # Strip @PG only when it is actually malformed. An aligner can embed tabs inside CL:,
+      # and because the header line is itself tab-delimited those become extra fields --
+      # including a second ID: -- which is what htsjdk rejects. Counting ID: fields detects
+      # exactly that, so a well-formed header keeps its provenance.
+      strip_pg=false
+      if ~{strip_bad_pg}; then
+        bad_pg=$(samtools view -H "${bam_list[0]}" \
+                 | awk -F'\t' '/^@PG/ {n=0; for (i=1;i<=NF;i++) if ($i ~ /^ID:/) n++; if (n>1) c++}
+                               END {print c+0}')
+        if [ "${bad_pg}" -gt 0 ]; then
+          echo "@PG header has an embedded tab (${bad_pg} line(s) with more than one ID:);" >&2
+          echo "stripping @PG so htsjdk can read the header" >&2
+          strip_pg=true
+        else
+          echo "@PG header is well formed; keeping it" >&2
+        fi
+      fi
 
       merge_stream() {
         if [ "${#bam_list[@]}" -gt 1 ]; then
-          samtools merge -f -c -p -u -@ ~{threads} - "${bam_list[@]}"
+          samtools merge -f -c -p -u -@ "${threads}" - "${bam_list[@]}"
         else
           samtools view -h -u "${bam_list[0]}"
         fi
       }
 
-      # @PG stripping: an aligner may embed tab-separated fields in CL:, which makes htsjdk
-      # read a spurious second ID: field and reject the header.
-      # Flag fix: per-chromosome fixmate may clear 0x1 while leaving 0x40/0x80 set on
-      # discordant-mate reads; htsjdk treats this as a validation error.
-      if ~{sanitize_header}; then
+      if ${strip_pg} || ~{repair_flags}; then
         merge_stream \
-          | samtools view -h -@ ~{threads} \
-          | awk 'BEGIN{OFS="\t"} /^@PG/{next} /^@/{print;next} {
-              f=int($2)
-              if (and(f,1)==0) { f=f-and(f,64)-and(f,128); $2=f }
-              print
-            }' \
-          | samtools view -@ ~{threads} -O BAM -o merged.bam
+          | samtools view -h -@ "${threads}" \
+          | awk -v strip_pg="${strip_pg}" -v repair="~{repair_flags}" 'BEGIN{OFS="\t"}
+              /^@PG/ { if (strip_pg == "true") next; print; next }
+              /^@/   { print; next }
+              {
+                if (repair == "true") {
+                  f = int($2)
+                  if (and(f,1) == 0) { f = f - and(f,64) - and(f,128); $2 = f }
+                }
+                print
+              }' \
+          | samtools view -@ "${threads}" -O BAM -o merged.bam
       else
-        merge_stream | samtools view -@ ~{threads} -O BAM -o merged.bam
+        merge_stream | samtools view -@ "${threads}" -O BAM -o merged.bam
       fi
 
-      samtools index -@ ~{threads} merged.bam
+      samtools index -@ "${threads}" merged.bam
     >>>
 
     output {
@@ -928,7 +1136,6 @@ task merge_bams {
         modules: modules
     }
 }
-
 # Extract a WG tarball (amber/, cobalt/, purple/, pave/, sage/) into a local directory,
 # return its absolute path, and work out which tumour sample the outputs belong to.
 task extract_wgts {
@@ -1483,7 +1690,10 @@ task run_wgts {
       fi
 
       export NXF_OFFLINE=true
-      export NXF_OPTS="-Xms512m -Xmx8g"
+      # -XX:-UseContainerSupport: the JVM's cgroup probe aborts startup on a node where it
+      # cannot enumerate the controllers. The heap is pinned here, so nothing depends on the
+      # limits that probe would report.
+      export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
@@ -1507,11 +1717,16 @@ task run_wgts {
       # NXF_HOME must be WRITABLE. The nextflow launcher does mkdir -p $NXF_HOME/tmp and the
       # local secrets provider wants $NXF_HOME/secrets, but a module tree is read-only, so
       # pointing NXF_HOME straight at it fails with "Read-only file system". Give nextflow a
-      # writable directory in the task workdir and symlink the cached plugins into it: the
-      # plugins are only read, and nothing is written to the module.
+      # writable directory in the task workdir. plugins/ itself must be a real directory:
+      # nextflow calls createDirectories on it, which rejects a symlink even when it resolves
+      # to a directory. Its entries are only read, so they can be symlinks into the module.
       nxf_home_rw="$(pwd)/nxf_home"
-      mkdir -p "${nxf_home_rw}"
-      ln -sfn "${nxf_home}/plugins" "${nxf_home_rw}/plugins"
+      mkdir -p "${nxf_home_rw}/plugins"
+      for plugin in "${nxf_home}"/plugins/*; do
+        if [ -e "${plugin}" ]; then
+          ln -sfn "${plugin}" "${nxf_home_rw}/plugins/"
+        fi
+      done
       export NXF_HOME="${nxf_home_rw}"
       # A loaded oncoanalyser 2.x module points these at its read-only tree.
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
@@ -1711,7 +1926,10 @@ task run_purity_estimate {
       fi
 
       export NXF_OFFLINE=true
-      export NXF_OPTS="-Xms512m -Xmx8g"
+      # -XX:-UseContainerSupport: the JVM's cgroup probe aborts startup on a node where it
+      # cannot enumerate the controllers. The heap is pinned here, so nothing depends on the
+      # limits that probe would report.
+      export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
@@ -1735,11 +1953,16 @@ task run_purity_estimate {
       # NXF_HOME must be WRITABLE. The nextflow launcher does mkdir -p $NXF_HOME/tmp and the
       # local secrets provider wants $NXF_HOME/secrets, but a module tree is read-only, so
       # pointing NXF_HOME straight at it fails with "Read-only file system". Give nextflow a
-      # writable directory in the task workdir and symlink the cached plugins into it: the
-      # plugins are only read, and nothing is written to the module.
+      # writable directory in the task workdir. plugins/ itself must be a real directory:
+      # nextflow calls createDirectories on it, which rejects a symlink even when it resolves
+      # to a directory. Its entries are only read, so they can be symlinks into the module.
       nxf_home_rw="$(pwd)/nxf_home"
-      mkdir -p "${nxf_home_rw}"
-      ln -sfn "${nxf_home}/plugins" "${nxf_home_rw}/plugins"
+      mkdir -p "${nxf_home_rw}/plugins"
+      for plugin in "${nxf_home}"/plugins/*; do
+        if [ -e "${plugin}" ]; then
+          ln -sfn "${plugin}" "${nxf_home_rw}/plugins/"
+        fi
+      done
       export NXF_HOME="${nxf_home_rw}"
       unset NXF_DIST NXF_LAUNCHER NXF_PLUGINS_DIR || true
 

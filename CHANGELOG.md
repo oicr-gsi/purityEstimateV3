@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-08-19
 ### Added
+- samtools tasks cap their thread count at the CPUs actually allocated, and log a note when
+  the two differ. A backend that does not map the `cpu` runtime attribute otherwise leaves
+  samtools oversubscribed on one core, which is slower than running single-threaded and gives
+  no indication why.
+- The `@PG` header is now checked rather than assumed. `merge_bams` strips it only when it
+  is actually malformed -- an `@PG` line carrying more than one `ID:` field, which is what an
+  aligner embedding tabs in `CL:` produces and what htsjdk rejects -- so a well-formed header
+  keeps its provenance. `sanitize_header` is replaced by `repair_flags` (the unpaired-flag
+  repair that only the fixmate path needs) and `strip_bad_pg` (run the check at all), which
+  were previously conflated.
+- `probe_mc_tags`, which decides whether fixmate is needed from the alignments rather than
+  from the input alone. `doFixmate = false` is honoured when the tags are really present; when
+  they are not, fixmate runs anyway with a warning, rather than letting REDUX mark duplicates
+  silently wrong. `doFixmate = true` always fixmates, so the probe only runs when its answer
+  can change the decision.
 - `doFixmate`. Consulted only when `run_redux` is true and the sample is Illumina: leave it
   true for alignments that lack mate CIGAR tags, set it false when the aligner already wrote
   them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter. The inputs are still
@@ -15,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.command.run`; the Slurm executor emits `--mem` and `--cpus-per-task` from the memory and
   cpus directives. `nextflow_config` is a list, each entry passed with its own `-c` in order,
   so a shared overlay and a per-site one compose. A `slurm` run must supply one, because the
-  config the module ships selects the SGE executor.
+  config the module ships selects the SGE executor. `validate_inputs` checks that each entry
+  is a readable file, so a wrong path fails before any alignment work.
 - `pre_filtering`, which filters the primary's somatic VCF in WG and WG_PE mode and reports
   what each filter cost. Two filter sets, both primary-side: the **primary filters** WISP
   uses to decide which sites can carry MRD signal (mappability, repeat count, SNV only,

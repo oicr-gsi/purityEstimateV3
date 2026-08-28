@@ -83,6 +83,9 @@ Parameter|Value|Default|Description
 `use_primary_filters`|Boolean|true|PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
 `scheduler`|String|"sge"|Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
+`slurm_partition`|String?|None|Partition Nextflow submits its own jobs to, required when scheduler is slurm. The overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist elsewhere
+`slurm_account`|String?|None|Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed
+`singularity_binds`|Array[String]?|None|Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for
 `nextflow_config`|Array[String]?|None|Config overlays passed to nextflow, each with its own -c, in order. Leave null on SGE to use the overlay the oncoanalyser module ships. A site whose scheduler differs must supply its own, because that overlay sets the executor; split it so the settings that hold everywhere (genome paths, container overrides, per-process resources) stay in one file and only the executor and filesystem binds are per-site
 `modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
 
@@ -268,9 +271,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       case "~{scheduler}" in
         sge) ;;
         slurm)
-          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
-          [ "${config_count}" -gt 0 ] || \
-            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+          # The overlay the module ships names a queue for its own scheduler. The head jobs
+          # generate the rest of the slurm settings, but the partition has to be supplied.
+          [ -n "~{slurm_partition}" ] || \
+            errors+=("scheduler slurm requires slurm_partition: the overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist here")
           ;;
         *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
       esac
@@ -890,6 +894,32 @@ This section lists command(s) run by purityEstimateV3 workflow
         config_args+=(-c "${cfg}")
       done
 
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
+
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
       # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
@@ -1057,6 +1087,32 @@ This section lists command(s) run by purityEstimateV3 workflow
       for cfg in "${configs[@]}"; do
         config_args+=(-c "${cfg}")
       done
+
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.

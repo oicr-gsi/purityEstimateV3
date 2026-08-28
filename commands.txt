@@ -59,9 +59,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       case "~{scheduler}" in
         sge) ;;
         slurm)
-          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
-          [ "${config_count}" -gt 0 ] || \
-            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+          # The overlay the module ships names a queue for its own scheduler. The head jobs
+          # generate the rest of the slurm settings, but the partition has to be supplied.
+          [ -n "~{slurm_partition}" ] || \
+            errors+=("scheduler slurm requires slurm_partition: the overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist here")
           ;;
         *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
       esac
@@ -681,6 +682,32 @@ This section lists command(s) run by purityEstimateV3 workflow
         config_args+=(-c "${cfg}")
       done
 
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
+
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
       # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
@@ -848,6 +875,32 @@ This section lists command(s) run by purityEstimateV3 workflow
       for cfg in "${configs[@]}"; do
         config_args+=(-c "${cfg}")
       done
+
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.

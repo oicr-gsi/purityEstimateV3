@@ -4,12 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2026-08-27
+## [1.3.0] - 2026-08-28
 ### Added
 - `slurm_partition`, `slurm_account` and `singularity_binds`. With `scheduler = "slurm"` the
   head jobs now write the executor overlay themselves, from these three values, and apply it
   after every `-c` above it. A Slurm run therefore needs no config file on the cluster;
   `nextflow_config` is left for anything else a site wants to add.
+- `purityEstimateV3_primary` as a second Vidarr workflow name, so a primary-only run can be
+  registered separately from the full workflow.
+
+## [1.2.0] - 2026-08-27
+### Added
 - `probe_mc_tags`, which decides whether fixmate is needed from the alignments rather than
   from the input alone. `doFixmate = false` is honoured when the tags are really present; when
   they are not, fixmate runs anyway with a warning, rather than letting REDUX mark duplicates

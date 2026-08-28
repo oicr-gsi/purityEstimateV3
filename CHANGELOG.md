@@ -46,7 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `doFixmate`. Consulted only when `run_redux` is true and the sample is Illumina: leave it
   true for alignments that lack mate CIGAR tags, set it false when the aligner already wrote
   them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter. The inputs are still
-  merged, since REDUX takes one alignment file per sample.
+  merged, because oncoanalyser's samplesheet accepts one file per sample and filetype,
+  FASTQ excepted; REDUX itself would take a list.
 - `scheduler` (`sge` or `slurm`, validated) and `nextflow_config`. The submit wrapper is
   installed only for `sge`, where the executor embeds `h_rss`/`mem_free` directly in
   `.command.run`; the Slurm executor emits `--mem` and `--cpus-per-task` from the memory and

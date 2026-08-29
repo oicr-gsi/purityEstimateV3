@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2026-08-28
 ### Added
+- The generated slurm overlay keeps a quarter of each memory request outside the JVM heap,
+  and adds the no-exit-status case to the pipeline's retry list. Slurm enforces the request
+  as RSS, so a heap sized at the pipeline default leaves nothing for the helper processes
+  the tools fork and the cgroup kills the job; such a kill reports no exit status, so it
+  matched nothing the pipeline retries on and the memory scaling by attempt was
+  unreachable.
 - `validate_inputs` rejects the slurm-only settings when `scheduler` is not slurm. They are
   otherwise ignored in silence, and the run fails only once the head job submits with the
   wrong command, after the alignment work is done.

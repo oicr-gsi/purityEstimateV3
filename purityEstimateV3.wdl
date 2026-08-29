@@ -1808,6 +1808,18 @@ task run_wgts {
           echo "executor { name = 'slurm' }"
           echo "process {"
           echo "    queue = '~{slurm_partition}'"
+          # Slurm enforces the memory request as RSS. A JVM sized at the module default of
+          # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
+          # kills the job. Keep a quarter of the request outside the heap. Processes that do
+          # not read this setting are unaffected.
+          echo "    ext.xmx_mod = 0.75"
+          # A cgroup kill reports no exit status, which the pipeline's own list does not
+          # match, so the job would not be retried at all -- and the per-process memory
+          # directives scale with task.attempt, which is otherwise unreachable. Add that one
+          # case to the list rather than retrying everything, so a tool error still fails at
+          # once. Selectors in the pipeline's own config stay more specific and still win.
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
           if [ -n "~{slurm_account}" ]; then
@@ -2075,6 +2087,18 @@ task run_purity_estimate {
           echo "executor { name = 'slurm' }"
           echo "process {"
           echo "    queue = '~{slurm_partition}'"
+          # Slurm enforces the memory request as RSS. A JVM sized at the module default of
+          # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
+          # kills the job. Keep a quarter of the request outside the heap. Processes that do
+          # not read this setting are unaffected.
+          echo "    ext.xmx_mod = 0.75"
+          # A cgroup kill reports no exit status, which the pipeline's own list does not
+          # match, so the job would not be retried at all -- and the per-process memory
+          # directives scale with task.attempt, which is otherwise unreachable. Add that one
+          # case to the list rather than retrying everything, so a tool error still fails at
+          # once. Selectors in the pipeline's own config stay more specific and still win.
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
           if [ -n "~{slurm_account}" ]; then

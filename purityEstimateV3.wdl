@@ -142,6 +142,8 @@ workflow purityEstimateV3 {
             has_controls        = defined(controls),
             scheduler           = scheduler,
             slurm_partition     = select_first([slurm_partition, ""]),
+            slurm_account       = select_first([slurm_account, ""]),
+            singularity_binds   = select_first([singularity_binds, []]),
             nextflow_config     = select_first([nextflow_config, []])
     }
 
@@ -597,6 +599,8 @@ task validate_inputs {
         Boolean has_controls
         String  scheduler
         String  slurm_partition = ""
+        String  slurm_account   = ""
+        Array[String] singularity_binds = []
         Array[String] nextflow_config = []
         Int memory  = 1
         Int timeout = 1
@@ -613,6 +617,8 @@ task validate_inputs {
         has_controls:        "Whether the controls array was supplied"
         scheduler:           "Requested batch scheduler"
         slurm_partition:     "Partition for the jobs nextflow submits; required for slurm"
+        slurm_account:       "Accounting group for those jobs; checked only for consistency here"
+        singularity_binds:   "Container bind paths; checked only for consistency here"
         nextflow_config:     "Extra nextflow config files, checked for readability"
         memory:              "Memory in GB"
         timeout:             "Wall-clock timeout in hours"
@@ -671,8 +677,22 @@ task validate_inputs {
         [ -f "${cfg}" ] && [ -r "${cfg}" ] || errors+=("nextflow_config not readable: ${cfg}")
       done < "~{write_lines(nextflow_config)}"
 
+      # Settings that take effect only for slurm. Supplied alongside a different scheduler
+      # they are silently ignored, and the run fails much later, when the head job submits
+      # with the wrong command, after all the alignment work has already been done.
+      slurm_only=()
+      if [ -n "~{slurm_partition}" ]; then slurm_only+=("slurm_partition"); fi
+      if [ -n "~{slurm_account}" ];   then slurm_only+=("slurm_account"); fi
+      binds=(~{sep=" " singularity_binds})
+      if [ "${#binds[@]}" -gt 0 ];    then slurm_only+=("singularity_binds"); fi
+
       case "~{scheduler}" in
-        sge) ;;
+        sge)
+          if [ "${#slurm_only[@]}" -gt 0 ]; then
+            supplied=$(IFS=,; echo "${slurm_only[*]}")
+            errors+=("scheduler is sge but ${supplied} supplied; those take effect only for slurm, so this run was probably meant for a different cluster")
+          fi
+          ;;
         slurm)
           # The overlay the module ships names a queue for its own scheduler. The head jobs
           # generate the rest of the slurm settings, but the partition has to be supplied.

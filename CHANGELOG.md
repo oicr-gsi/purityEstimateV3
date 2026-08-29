@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2026-08-28
 ### Added
+- `validate_inputs` rejects the slurm-only settings when `scheduler` is not slurm. They are
+  otherwise ignored in silence, and the run fails only once the head job submits with the
+  wrong command, after the alignment work is done.
 - `slurm_partition`, `slurm_account` and `singularity_binds`. With `scheduler = "slurm"` the
   head jobs now write the executor overlay themselves, from these three values, and apply it
   after every `-c` above it. A Slurm run therefore needs no config file on the cluster;

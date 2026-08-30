@@ -57,6 +57,7 @@ workflow purityEstimateV3 {
         Boolean       use_primary_filters = true  # PE mode; see parameter_meta
         Boolean       nextflow_stub = false   # run oncoanalyser with -stub; see parameter_meta
         String        scheduler = "sge"       # "sge" or "slurm"; see parameter_meta
+        String?       hmftools_log_level      # DEBUG-branch only; see parameter_meta
         String?       slurm_partition         # required when scheduler = "slurm"
         String?       slurm_account           # see parameter_meta
         Array[String]? singularity_binds      # null = keep the binds the module's overlay sets
@@ -83,6 +84,7 @@ workflow purityEstimateV3 {
         allow_mixed_platforms:  "Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning"
         use_primary_filters:    "PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing"
         scheduler:              "Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper"
+        hmftools_log_level:     "Log level for the hmftools processes, passed to oncoanalyser as --hmftools_log_level. Null leaves the pipeline's own default, which is DEBUG and emits a per-region progress line from every tool. INFO removes those. It does not suppress a stack trace a tool writes to stderr itself, so it reduces log volume without hiding a fault"
         slurm_partition:        "Partition Nextflow submits its own jobs to, required when scheduler is slurm. The overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist elsewhere"
         slurm_account:          "Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed"
         singularity_binds:      "Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for"
@@ -397,6 +399,7 @@ workflow purityEstimateV3 {
                 nextflow_bin        = nextflow_bin,
                 nextflow_home       = nextflow_home,
                 scheduler           = scheduler,
+                hmftools_log_level  = hmftools_log_level,
                 slurm_partition     = select_first([slurm_partition, ""]),
                 slurm_account       = select_first([slurm_account, ""]),
                 singularity_binds   = select_first([singularity_binds, []]),
@@ -468,6 +471,7 @@ workflow purityEstimateV3 {
                 nextflow_bin           = nextflow_bin,
                 nextflow_home          = nextflow_home,
                 scheduler              = scheduler,
+                hmftools_log_level  = hmftools_log_level,
                 slurm_partition     = select_first([slurm_partition, ""]),
                 slurm_account       = select_first([slurm_account, ""]),
                 singularity_binds   = select_first([singularity_binds, []]),
@@ -502,7 +506,8 @@ workflow purityEstimateV3 {
                         nextflow_bin           = nextflow_bin,
                         nextflow_home          = nextflow_home,
                         scheduler              = scheduler,
-                        slurm_partition     = select_first([slurm_partition, ""]),
+                        hmftools_log_level  = hmftools_log_level,
+                slurm_partition     = select_first([slurm_partition, ""]),
                         slurm_account       = select_first([slurm_account, ""]),
                         singularity_binds   = select_first([singularity_binds, []]),
                         nextflow_config        = site_configs,
@@ -1624,6 +1629,7 @@ task run_wgts {
         String  nextflow_bin
         String  nextflow_home
         String  scheduler
+        String? hmftools_log_level
         String  slurm_partition = ""
         String  slurm_account   = ""
         Array[String] singularity_binds = []
@@ -1655,6 +1661,7 @@ task run_wgts {
         nextflow_bin:        "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
         nextflow_home:       "NXF_HOME holding the pre-cached nf-schema plugin, so the run works with NXF_OFFLINE=true"
         scheduler:       "Batch scheduler Nextflow submits to; the submit wrapper is installed only for sge"
+        hmftools_log_level: "Log level for the hmftools processes; null leaves the pipeline default"
         slurm_partition:   "Partition for the jobs nextflow submits, when scheduler is slurm"
         slurm_account:     "Accounting group for those jobs; also clears the request the module's overlay writes in the other scheduler's syntax"
         singularity_binds: "Paths bound into every container, replacing the bind the module's overlay sets. Empty keeps that bind"
@@ -1852,6 +1859,7 @@ task run_wgts {
           --igenomes_base ~{ref_data_dir} \
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
+          ~{"--hmftools_log_level " + hmftools_log_level} \
           -profile singularity \
           "${config_args[@]}" \
           "${stub_args[@]}" \
@@ -1900,6 +1908,7 @@ task run_purity_estimate {
         String  nextflow_bin
         String  nextflow_home
         String  scheduler
+        String? hmftools_log_level
         String  slurm_partition = ""
         String  slurm_account   = ""
         Array[String] singularity_binds = []
@@ -1929,6 +1938,7 @@ task run_purity_estimate {
         nextflow_bin:           "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
         nextflow_home:          "NXF_HOME holding the pre-cached nf-schema plugin, so the run works with NXF_OFFLINE=true"
         scheduler:          "Batch scheduler Nextflow submits to; the submit wrapper is installed only for sge"
+        hmftools_log_level:   "Log level for the hmftools processes; null leaves the pipeline default"
         slurm_partition:      "Partition for the jobs nextflow submits, when scheduler is slurm"
         slurm_account:        "Accounting group for those jobs; also clears the request the module's overlay writes in the other scheduler's syntax"
         singularity_binds:    "Paths bound into every container, replacing the bind the module's overlay sets. Empty keeps that bind"
@@ -2132,6 +2142,7 @@ task run_purity_estimate {
           --igenomes_base ~{ref_data_dir} \
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
+          ~{"--hmftools_log_level " + hmftools_log_level} \
           -profile singularity \
           "${config_args[@]}" \
           "${stub_args[@]}" \

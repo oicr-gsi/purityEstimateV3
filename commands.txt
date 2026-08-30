@@ -750,6 +750,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --igenomes_base ~{ref_data_dir} \
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
+          ~{"--hmftools_log_level " + hmftools_log_level} \
           -profile singularity \
           "${config_args[@]}" \
           "${stub_args[@]}" \
@@ -957,6 +958,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --igenomes_base ~{ref_data_dir} \
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
+          ~{"--hmftools_log_level " + hmftools_log_level} \
           -profile singularity \
           "${config_args[@]}" \
           "${stub_args[@]}" \

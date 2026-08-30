@@ -83,6 +83,7 @@ Parameter|Value|Default|Description
 `use_primary_filters`|Boolean|true|PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
 `scheduler`|String|"sge"|Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
+`hmftools_log_level`|String?|None|Log level for the hmftools processes, passed to oncoanalyser as --hmftools_log_level. Null leaves the pipeline's own default, which is DEBUG and emits a per-region progress line from every tool. INFO removes those. It does not suppress a stack trace a tool writes to stderr itself, so it reduces log volume without hiding a fault
 `slurm_partition`|String?|None|Partition Nextflow submits its own jobs to, required when scheduler is slurm. The overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist elsewhere
 `slurm_account`|String?|None|Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed
 `singularity_binds`|Array[String]?|None|Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for
@@ -962,6 +963,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --igenomes_base ~{ref_data_dir} \
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
+          ~{"--hmftools_log_level " + hmftools_log_level} \
           -profile singularity \
           "${config_args[@]}" \
           "${stub_args[@]}" \
@@ -1169,6 +1171,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --igenomes_base ~{ref_data_dir} \
           --hmf_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
+          ~{"--hmftools_log_level " + hmftools_log_level} \
           -profile singularity \
           "${config_args[@]}" \
           "${stub_args[@]}" \

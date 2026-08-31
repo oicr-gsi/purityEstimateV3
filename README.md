@@ -82,7 +82,7 @@ Parameter|Value|Default|Description
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
 `use_primary_filters`|Boolean|true|PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
-`scheduler`|String|"sge"|Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
+`scheduler`|String|""|Which batch scheduler Nextflow submits to, sge or slurm. Leave empty and validate_inputs decides from the submit command present on the cluster, which is what makes one set of inputs portable between sites; the value it resolved is reported in that task's output and used by the head jobs. Set it only to override that. It selects whether the submit wrapper is placed on PATH: the wrapper exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
 `slurm_partition`|String?|None|Partition Nextflow submits its own jobs to, required when scheduler is slurm. The overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist elsewhere
 `slurm_account`|String?|None|Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed
 `singularity_binds`|Array[String]?|None|Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for
@@ -268,20 +268,34 @@ This section lists command(s) run by purityEstimateV3 workflow
         [ -f "${cfg}" ] && [ -r "${cfg}" ] || errors+=("nextflow_config not readable: ${cfg}")
       done < "~{write_lines(nextflow_config)}"
 
-      # Settings that take effect only for slurm. Supplied alongside a different scheduler
-      # they are silently ignored, and the run fails much later, when the head job submits
-      # with the wrong command, after all the alignment work has already been done.
+      # Which scheduler the head jobs tell nextflow to submit to. Decided here, once, from
+      # the submit command the cluster provides, and passed on to those tasks; a caller that
+      # had to name it per site would get it wrong the first time the inputs moved. sbatch is
+      # preferred where both exist, and the choice is always logged so it can be checked.
+      sched="~{scheduler}"
+      if [ -z "${sched}" ]; then
+        if   command -v sbatch >/dev/null 2>&1; then sched=slurm
+        elif command -v qsub   >/dev/null 2>&1; then sched=sge
+        else
+          errors+=("cannot tell which scheduler nextflow should submit to: neither sbatch nor qsub is on PATH. Set the scheduler input")
+        fi
+        [ -z "${sched}" ] || echo "detected scheduler ${sched}" >&2
+      fi
+      echo "${sched}" > scheduler.txt
+
+      # Settings that only a slurm run reads. Supplied elsewhere they are ignored rather than
+      # refused, so one set of inputs can carry them and still run at a site that does not
+      # need them.
       slurm_only=()
       if [ -n "~{slurm_partition}" ]; then slurm_only+=("slurm_partition"); fi
       if [ -n "~{slurm_account}" ];   then slurm_only+=("slurm_account"); fi
       binds=(~{sep=" " singularity_binds})
       if [ "${#binds[@]}" -gt 0 ];    then slurm_only+=("singularity_binds"); fi
 
-      case "~{scheduler}" in
+      case "${sched}" in
         sge)
           if [ "${#slurm_only[@]}" -gt 0 ]; then
-            supplied=$(IFS=,; echo "${slurm_only[*]}")
-            errors+=("scheduler is sge but ${supplied} supplied; those take effect only for slurm, so this run was probably meant for a different cluster")
+            echo "note: $(IFS=,; echo "${slurm_only[*]}") ignored; those apply only to slurm" >&2
           fi
           ;;
         slurm)
@@ -290,7 +304,8 @@ This section lists command(s) run by purityEstimateV3 workflow
           [ -n "~{slurm_partition}" ] || \
             errors+=("scheduler slurm requires slurm_partition: the overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist here")
           ;;
-        *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
+        "") ;;
+        *) errors+=("scheduler must be sge or slurm, got '${sched}'") ;;
       esac
 
       if [ "${#errors[@]}" -gt 0 ]; then

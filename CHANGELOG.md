@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2026-08-28
 ### Added
+- `scheduler` defaults to empty, meaning `validate_inputs` decides from the submit command
+  the cluster provides and the head jobs use what it resolved. One set of inputs is then
+  portable between sites, which a JSON arguments file cannot express by itself. Setting the
+  input overrides the decision. Slurm-only settings supplied where they do not apply are
+  now ignored with a note rather than refused, so the same file can carry them everywhere.
 - The generated slurm overlay keeps a quarter of each memory request outside the JVM heap,
   and adds the no-exit-status case to the pipeline's retry list. Slurm enforces the request
   as RSS, so a heap sized at the pipeline default leaves nothing for the helper processes

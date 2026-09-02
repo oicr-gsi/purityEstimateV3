@@ -4,34 +4,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2026-08-19
+## [1.3.0] - 2026-08-28
 ### Added
-- samtools tasks cap their thread count at the CPUs actually allocated, and log a note when
-  the two differ. A backend that does not map the `cpu` runtime attribute otherwise leaves
-  samtools oversubscribed on one core, which is slower than running single-threaded and gives
-  no indication why.
+- `scheduler` defaults to empty, meaning `validate_inputs` decides from the submit command
+  the cluster provides and the head jobs use what it resolved. One set of inputs is then
+  portable between sites, which a JSON arguments file cannot express by itself. Setting the
+  input overrides the decision. Slurm-only settings supplied where they do not apply are
+  now ignored with a note rather than refused, so the same file can carry them everywhere.
+- The generated slurm overlay keeps a quarter of each memory request outside the JVM heap,
+  and adds the no-exit-status case to the pipeline's retry list. Slurm enforces the request
+  as RSS, so a heap sized at the pipeline default leaves nothing for the helper processes
+  the tools fork and the cgroup kills the job; such a kill reports no exit status, so it
+  matched nothing the pipeline retries on and the memory scaling by attempt was
+  unreachable.
+- `validate_inputs` rejects the slurm-only settings when `scheduler` is not slurm. They are
+  otherwise ignored in silence, and the run fails only once the head job submits with the
+  wrong command, after the alignment work is done.
+- `slurm_partition`, `slurm_account` and `singularity_binds`. With `scheduler = "slurm"` the
+  head jobs now write the executor overlay themselves, from these three values, and apply it
+  after every `-c` above it. A Slurm run therefore needs no config file on the cluster;
+  `nextflow_config` is left for anything else a site wants to add.
+- `purityEstimateV3_primary` as a second Vidarr workflow name, so a primary-only run can be
+  registered separately from the full workflow.
+
+## [1.2.0] - 2026-08-27
+### Added
+- `probe_mc_tags`, which decides whether fixmate is needed from the alignments rather than
+  from the input alone. `doFixmate = false` is honoured when the tags are really present; when
+  they are not, fixmate runs anyway with a warning, rather than letting REDUX mark duplicates
+  silently wrong. `doFixmate = true` always fixmates, so the probe only runs when its answer
+  can change the decision.
 - The `@PG` header is now checked rather than assumed. `merge_bams` strips it only when it
   is actually malformed -- an `@PG` line carrying more than one `ID:` field, which is what an
   aligner embedding tabs in `CL:` produces and what htsjdk rejects -- so a well-formed header
   keeps its provenance. `sanitize_header` is replaced by `repair_flags` (the unpaired-flag
   repair that only the fixmate path needs) and `strip_bad_pg` (run the check at all), which
   were previously conflated.
-- `probe_mc_tags`, which decides whether fixmate is needed from the alignments rather than
-  from the input alone. `doFixmate = false` is honoured when the tags are really present; when
-  they are not, fixmate runs anyway with a warning, rather than letting REDUX mark duplicates
-  silently wrong. `doFixmate = true` always fixmates, so the probe only runs when its answer
-  can change the decision.
+- `validate_inputs` checks that each `nextflow_config` entry is a readable file, so a wrong
+  path fails before any alignment work.
+
+### Fixed
+- samtools tasks cap their thread count at the CPUs actually allocated, and log a note when
+  the two differ. A backend that does not map the `cpu` runtime attribute otherwise leaves
+  samtools oversubscribed on one core, which is slower than running single-threaded and gives
+  no indication why.
+- `NXF_HOME/plugins` is a real directory holding one symlink per cached plugin, instead of a
+  symlink to the module's plugins directory. Nextflow calls `createDirectories` on that path,
+  which rejects a symlink even when it resolves to a directory.
+- The nextflow head jobs disable the JVM container probe, which aborts startup on a node
+  where it cannot enumerate cgroup controllers. The heap is pinned explicitly, so nothing
+  depends on the limits the probe would report.
+
+## [1.1.0] - 2026-08-19
+### Added
 - `doFixmate`. Consulted only when `run_redux` is true and the sample is Illumina: leave it
   true for alignments that lack mate CIGAR tags, set it false when the aligner already wrote
   them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter. The inputs are still
-  merged, since REDUX takes one alignment file per sample.
+  merged, because oncoanalyser's samplesheet accepts one file per sample and filetype,
+  FASTQ excepted; REDUX itself would take a list.
 - `scheduler` (`sge` or `slurm`, validated) and `nextflow_config`. The submit wrapper is
   installed only for `sge`, where the executor embeds `h_rss`/`mem_free` directly in
   `.command.run`; the Slurm executor emits `--mem` and `--cpus-per-task` from the memory and
   cpus directives. `nextflow_config` is a list, each entry passed with its own `-c` in order,
   so a shared overlay and a per-site one compose. A `slurm` run must supply one, because the
-  config the module ships selects the SGE executor. `validate_inputs` checks that each entry
-  is a readable file, so a wrong path fails before any alignment work.
+  config the module ships selects the SGE executor.
 - `pre_filtering`, which filters the primary's somatic VCF in WG and WG_PE mode and reports
   what each filter cost. Two filter sets, both primary-side: the **primary filters** WISP
   uses to decide which sites can carry MRD signal (mappability, repeat count, SNV only,

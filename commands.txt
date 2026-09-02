@@ -56,14 +56,44 @@ This section lists command(s) run by purityEstimateV3 workflow
         [ -f "${cfg}" ] && [ -r "${cfg}" ] || errors+=("nextflow_config not readable: ${cfg}")
       done < "~{write_lines(nextflow_config)}"
 
-      case "~{scheduler}" in
-        sge) ;;
-        slurm)
-          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
-          [ "${config_count}" -gt 0 ] || \
-            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+      # Which scheduler the head jobs tell nextflow to submit to. Decided here, once, from
+      # the submit command the cluster provides, and passed on to those tasks; a caller that
+      # had to name it per site would get it wrong the first time the inputs moved. sbatch is
+      # preferred where both exist, and the choice is always logged so it can be checked.
+      sched="~{scheduler}"
+      if [ -z "${sched}" ]; then
+        if   command -v sbatch >/dev/null 2>&1; then sched=slurm
+        elif command -v qsub   >/dev/null 2>&1; then sched=sge
+        else
+          errors+=("cannot tell which scheduler nextflow should submit to: neither sbatch nor qsub is on PATH. Set the scheduler input")
+        fi
+        [ -z "${sched}" ] || echo "detected scheduler ${sched}" >&2
+      fi
+      echo "${sched}" > scheduler.txt
+
+      # Settings that only a slurm run reads. Supplied elsewhere they are ignored rather than
+      # refused, so one set of inputs can carry them and still run at a site that does not
+      # need them.
+      slurm_only=()
+      if [ -n "~{slurm_partition}" ]; then slurm_only+=("slurm_partition"); fi
+      if [ -n "~{slurm_account}" ];   then slurm_only+=("slurm_account"); fi
+      binds=(~{sep=" " singularity_binds})
+      if [ "${#binds[@]}" -gt 0 ];    then slurm_only+=("singularity_binds"); fi
+
+      case "${sched}" in
+        sge)
+          if [ "${#slurm_only[@]}" -gt 0 ]; then
+            echo "note: $(IFS=,; echo "${slurm_only[*]}") ignored; those apply only to slurm" >&2
+          fi
           ;;
-        *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
+        slurm)
+          # The overlay the module ships names a queue for its own scheduler. The head jobs
+          # generate the rest of the slurm settings, but the partition has to be supplied.
+          [ -n "~{slurm_partition}" ] || \
+            errors+=("scheduler slurm requires slurm_partition: the overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist here")
+          ;;
+        "") ;;
+        *) errors+=("scheduler must be sge or slurm, got '${sched}'") ;;
       esac
 
       if [ "${#errors[@]}" -gt 0 ]; then
@@ -681,6 +711,44 @@ This section lists command(s) run by purityEstimateV3 workflow
         config_args+=(-c "${cfg}")
       done
 
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Slurm enforces the memory request as RSS. A JVM sized at the module default of
+          # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
+          # kills the job. Keep a quarter of the request outside the heap. Processes that do
+          # not read this setting are unaffected.
+          echo "    ext.xmx_mod = 0.75"
+          # A cgroup kill reports no exit status, which the pipeline's own list does not
+          # match, so the job would not be retried at all -- and the per-process memory
+          # directives scale with task.attempt, which is otherwise unreachable. Add that one
+          # case to the list rather than retrying everything, so a tool error still fails at
+          # once. Selectors in the pipeline's own config stay more specific and still win.
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    maxRetries = 1"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
+
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
       # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
@@ -848,6 +916,44 @@ This section lists command(s) run by purityEstimateV3 workflow
       for cfg in "${configs[@]}"; do
         config_args+=(-c "${cfg}")
       done
+
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Slurm enforces the memory request as RSS. A JVM sized at the module default of
+          # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
+          # kills the job. Keep a quarter of the request outside the heap. Processes that do
+          # not read this setting are unaffected.
+          echo "    ext.xmx_mod = 0.75"
+          # A cgroup kill reports no exit status, which the pipeline's own list does not
+          # match, so the job would not be retried at all -- and the per-process memory
+          # directives scale with task.attempt, which is otherwise unreachable. Add that one
+          # case to the list rather than retrying everything, so a tool error still fails at
+          # once. Selectors in the pipeline's own config stay more specific and still win.
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    maxRetries = 1"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.

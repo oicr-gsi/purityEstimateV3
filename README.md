@@ -75,14 +75,17 @@ Parameter|Value|Default|Description
 `tumor_sample_id`|String?|None|Primary tumour sample ID. Normally leave unset: in WG modes it is read from the tumour @RG SM tag, and in PE mode it is derived from the WG tarball's purple/ filenames. If given, it overrides the @RG SM tag in WG modes and is cross-checked against the tarball in PE mode
 `sequencing_platform`|String?|None|Sequencing platform passed to --sequencing_platform: illumina, sbx or ultima. Leave unset to detect it from the @RG PL tag
 `run_redux`|Boolean|false|When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs
-`doFixmate`|Boolean|true|Whether to add mate CIGAR (MC) tags before REDUX. Only consulted when run_redux is true and the sample is Illumina, since single-end reads have no mates to fix. Leave true for alignments that lack MC tags; set false when the aligner already wrote them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter entirely. The inputs are still merged, since REDUX takes one alignment file per sample
+`doFixmate`|Boolean|true|Whether to add mate CIGAR (MC) tags before REDUX. Only consulted when run_redux is true and the sample is Illumina, since single-end reads have no mates to fix. Leave true for alignments that lack MC tags; set false when the aligner already wrote them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter entirely. The inputs are still merged, because oncoanalyser's samplesheet accepts one file per sample and filetype, FASTQ excepted; REDUX itself would take a list
 `run_control`|Boolean|false|When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)
 `controls`|Array[Pair[String,String]]?|None|PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true
 `include_germline_outputs`|Boolean|false|Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work
 `allow_mixed_platforms`|Boolean|false|Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning
 `use_primary_filters`|Boolean|true|PE and WG_PE mode: whether the plasma stage works from the prefiltered primary VCF rather than the full call set. The WG stage always writes both, so this only chooses between them. A WG tarball produced before pre-filtering existed contains no prefiltered VCF; the run then falls back to the full set with a warning rather than failing
 `nextflow_stub`|Boolean|false|When true, oncoanalyser runs with -stub --create_stub_placeholders: every process writes placeholder outputs instead of doing real work. This exercises the whole wrapper (samplesheet, samplesheet validation, output layout, tarring, Vidarr outputs) in minutes. Real input alignments are still required, but they can be tiny, because the pipeline never reads them. Not a Cromwell dry run
-`scheduler`|String|"sge"|Which batch scheduler Nextflow submits to, sge or slurm. Selects whether the submit wrapper is placed on PATH: it exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
+`scheduler`|String|""|Which batch scheduler Nextflow submits to, sge or slurm. Leave empty and validate_inputs decides from the submit command present on the cluster, which is what makes one set of inputs portable between sites; the value it resolved is reported in that task's output and used by the head jobs. Set it only to override that. It selects whether the submit wrapper is placed on PATH: the wrapper exists to rewrite the h_rss/mem_free directives the SGE executor embeds directly in .command.run, where configuration cannot reach them. The Slurm executor emits --mem and --cpus-per-task from the memory and cpus directives, so it needs no wrapper
+`slurm_partition`|String?|None|Partition Nextflow submits its own jobs to, required when scheduler is slurm. The overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist elsewhere
+`slurm_account`|String?|None|Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed
+`singularity_binds`|Array[String]?|None|Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for
 `nextflow_config`|Array[String]?|None|Config overlays passed to nextflow, each with its own -c, in order. Leave null on SGE to use the overlay the oncoanalyser module ships. A site whose scheduler differs must supply its own, because that overlay sets the executor; split it so the settings that hold everywhere (genome paths, container overrides, per-process resources) stay in one file and only the executor and filesystem binds are per-site
 `modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
 
@@ -265,14 +268,44 @@ This section lists command(s) run by purityEstimateV3 workflow
         [ -f "${cfg}" ] && [ -r "${cfg}" ] || errors+=("nextflow_config not readable: ${cfg}")
       done < "~{write_lines(nextflow_config)}"
 
-      case "~{scheduler}" in
-        sge) ;;
-        slurm)
-          # The module's overlay sets executor sge, so it cannot be reused as-is elsewhere.
-          [ "${config_count}" -gt 0 ] || \
-            errors+=("scheduler slurm requires nextflow_config: the config the oncoanalyser module ships selects the SGE executor, so a slurm run has to supply its own overlay")
+      # Which scheduler the head jobs tell nextflow to submit to. Decided here, once, from
+      # the submit command the cluster provides, and passed on to those tasks; a caller that
+      # had to name it per site would get it wrong the first time the inputs moved. sbatch is
+      # preferred where both exist, and the choice is always logged so it can be checked.
+      sched="~{scheduler}"
+      if [ -z "${sched}" ]; then
+        if   command -v sbatch >/dev/null 2>&1; then sched=slurm
+        elif command -v qsub   >/dev/null 2>&1; then sched=sge
+        else
+          errors+=("cannot tell which scheduler nextflow should submit to: neither sbatch nor qsub is on PATH. Set the scheduler input")
+        fi
+        [ -z "${sched}" ] || echo "detected scheduler ${sched}" >&2
+      fi
+      echo "${sched}" > scheduler.txt
+
+      # Settings that only a slurm run reads. Supplied elsewhere they are ignored rather than
+      # refused, so one set of inputs can carry them and still run at a site that does not
+      # need them.
+      slurm_only=()
+      if [ -n "~{slurm_partition}" ]; then slurm_only+=("slurm_partition"); fi
+      if [ -n "~{slurm_account}" ];   then slurm_only+=("slurm_account"); fi
+      binds=(~{sep=" " singularity_binds})
+      if [ "${#binds[@]}" -gt 0 ];    then slurm_only+=("singularity_binds"); fi
+
+      case "${sched}" in
+        sge)
+          if [ "${#slurm_only[@]}" -gt 0 ]; then
+            echo "note: $(IFS=,; echo "${slurm_only[*]}") ignored; those apply only to slurm" >&2
+          fi
           ;;
-        *) errors+=("scheduler must be sge or slurm, got '~{scheduler}'") ;;
+        slurm)
+          # The overlay the module ships names a queue for its own scheduler. The head jobs
+          # generate the rest of the slurm settings, but the partition has to be supplied.
+          [ -n "~{slurm_partition}" ] || \
+            errors+=("scheduler slurm requires slurm_partition: the overlay the oncoanalyser module ships names a queue for its own scheduler, which does not exist here")
+          ;;
+        "") ;;
+        *) errors+=("scheduler must be sge or slurm, got '${sched}'") ;;
       esac
 
       if [ "${#errors[@]}" -gt 0 ]; then
@@ -890,6 +923,44 @@ This section lists command(s) run by purityEstimateV3 workflow
         config_args+=(-c "${cfg}")
       done
 
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Slurm enforces the memory request as RSS. A JVM sized at the module default of
+          # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
+          # kills the job. Keep a quarter of the request outside the heap. Processes that do
+          # not read this setting are unaffected.
+          echo "    ext.xmx_mod = 0.75"
+          # A cgroup kill reports no exit status, which the pipeline's own list does not
+          # match, so the job would not be retried at all -- and the per-process memory
+          # directives scale with task.attempt, which is otherwise unreachable. Add that one
+          # case to the list rather than retrying everything, so a tool error still fails at
+          # once. Selectors in the pipeline's own config stay more specific and still win.
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    maxRetries = 1"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
+
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.
       # "NFC...rityEstimateV3_test_01_WG)", which makes the log useless for grepping. Plain
@@ -1057,6 +1128,44 @@ This section lists command(s) run by purityEstimateV3 workflow
       for cfg in "${configs[@]}"; do
         config_args+=(-c "${cfg}")
       done
+
+      # The overlay the module ships selects its own scheduler, its queue and its container
+      # binds. Generate the overrides here instead of requiring a file on the filesystem, so
+      # the workflow carries everything it needs, and apply them last so they win. Only the
+      # values that vary by site are substituted; the shape is the same everywhere.
+      if [ "~{scheduler}" = "slurm" ]; then
+        bind_list=(~{sep=" " singularity_binds})
+        {
+          echo "executor { name = 'slurm' }"
+          echo "process {"
+          echo "    queue = '~{slurm_partition}'"
+          # Slurm enforces the memory request as RSS. A JVM sized at the module default of
+          # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
+          # kills the job. Keep a quarter of the request outside the heap. Processes that do
+          # not read this setting are unaffected.
+          echo "    ext.xmx_mod = 0.75"
+          # A cgroup kill reports no exit status, which the pipeline's own list does not
+          # match, so the job would not be retried at all -- and the per-process memory
+          # directives scale with task.attempt, which is otherwise unreachable. Add that one
+          # case to the list rather than retrying everything, so a tool error still fails at
+          # once. Selectors in the pipeline's own config stay more specific and still win.
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    maxRetries = 1"
+          # Always emitted, with or without an account: it also replaces the request the
+          # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
+          if [ -n "~{slurm_account}" ]; then
+            echo "    clusterOptions = '--account=~{slurm_account}'"
+          else
+            echo "    clusterOptions = ''"
+          fi
+          echo "}"
+          if [ "${#bind_list[@]}" -gt 0 ]; then
+            binds=$(IFS=,; echo "${bind_list[*]}")
+            echo "singularity { runOptions = '-B ${binds}' }"
+          fi
+        } > scheduler.config
+        config_args+=(-c "$(pwd)/scheduler.config")
+      fi
 
       # -ansi-log false because stdout is a Cromwell log file, not a terminal: the ANSI live
       # display rewrites lines and truncates process names to a nominal width, e.g.

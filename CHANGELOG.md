@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-03
+### Changed
+- `controls` takes a REDUX output directory per control rather than a BAM, and REDUX no longer
+  runs for controls at all: oncoanalyser reads the alignment and the BQR and jitter TSVs
+  straight from the directory. The same control pool is reused for every subject, so
+  regenerating those TSVs on each run was repeated work. The directory is resolved by exact
+  `{sample_id}.redux.*` filename, so the file prefix must equal the sample id the alignment's
+  `@RG SM` reports.
+
 ## [1.3.0] - 2026-08-28
 ### Added
 - `scheduler` defaults to empty, meaning `validate_inputs` decides from the submit command

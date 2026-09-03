@@ -116,7 +116,14 @@ This section lists command(s) run by purityEstimateV3 workflow
 ```
 ```
       set -euo pipefail
-      samtools view -H ~{aln_path} > header.txt
+      # A redux directory is accepted in place of an alignment: the sample id and platform
+      # come from the alignment's @RG line either way, and the directory holds one.
+      aln="~{aln_path}"
+      if [ -d "${aln}" ]; then
+        aln=$(ls "${aln}"/*.redux.bam)
+      fi
+
+      samtools view -H "${aln}" > header.txt
 
       # Sample ID from the first @RG SM tag.
       awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^SM:/){sub(/^SM:/,"",$i); print $i; exit}}' \
@@ -135,6 +142,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^PL:/){sub(/^PL:/,"",$i); print tolower($i); exit}}' \
         header.txt > platform.txt
       [ -s platform.txt ] || echo illumina > platform.txt
+
 ```
 ```
       set -euo pipefail
@@ -783,15 +791,26 @@ This section lists command(s) run by purityEstimateV3 workflow
       set -euo pipefail
       WORKDIR=$(pwd)
 
-      ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
-      ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
-
-      if ~{run_redux}; then
-        filetype="bam"
+      # A redux_dir input skips REDUX entirely: oncoanalyser takes both the alignment and
+      # the BQR and jitter TSVs from the directory, resolving them by exact
+      # {sample_id}.redux.* filename. The sample id comes from the alignment's @RG SM, so the
+      # file prefix has to agree with it. Nothing is staged; the directory is the filepath.
+      redux_dir="~{default="" longitudinal_redux_dir}"
+      if [ -n "${redux_dir}" ]; then
+        filetype="redux_dir"
         redux_info=""
+        long_path="${redux_dir}"
       else
-        filetype="bam_redux"
-        redux_info="generate_redux_tsvs_only"
+        ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
+        ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
+        long_path="${WORKDIR}/~{longitudinal_sample_id}.bam"
+        if ~{run_redux}; then
+          filetype="bam"
+          redux_info=""
+        else
+          filetype="bam_redux"
+          redux_info="generate_redux_tsvs_only"
+        fi
       fi
 
       # The longitudinal sample carries longitudinal_sample, plus the redux hint when
@@ -845,7 +864,7 @@ This section lists command(s) run by purityEstimateV3 workflow
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
         echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,${purple_dir}"
-        echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
+        echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${long_path}"
       } > samplesheet_purity.csv
 
       # -stub makes every process emit placeholder outputs, so the wrapper can be exercised

@@ -32,9 +32,10 @@ struct Alignment {
 # per run, so a PE run that also processes a normal of a different platform cannot be expressed
 # correctly.
 #
-# Note on run_redux and controls: control BAMs are legacy GATK-processed (deduped + BQSR) and
-# cannot be redux-processed. Controls always run with run_redux=false regardless of the
-# workflow-level run_redux setting. Only subject alignments are affected by run_redux.
+# Note on run_redux and controls: controls are supplied as existing REDUX output directories,
+# not as alignments, so REDUX does not run for them at all -- the same control pool is reused
+# across every subject and reprocessing it each time is wasted work. Only subject alignments
+# are affected by run_redux.
 
 workflow purityEstimateV3 {
     input {
@@ -50,7 +51,7 @@ workflow purityEstimateV3 {
         Boolean       run_redux = false       # see note above; semantics changed in 3.x
         Boolean       doFixmate = true        # see parameter_meta
         Boolean       run_control = false     # also estimate purity for each control (PE/WG_PE only)
-        Array[Pair[String, String]]? controls # PE mode: (control_id, bam_path) pairs; BAI at bam_path+".bai"
+        Array[Pair[String, String]]? controls # PE mode: (control_id, redux_dir) pairs; see parameter_meta
         String        outputFileNamePrefix
         Boolean       include_germline_outputs = false  # see parameter_meta
         Boolean       allow_mixed_platforms = false  # production guardrail; see parameter_meta
@@ -77,7 +78,7 @@ workflow purityEstimateV3 {
         run_redux:              "When true, REDUX processes the alignments normally. When false, inputs are treated as already REDUX-processed and REDUX only regenerates its TSVs (-bqr_jitter_msi_only). Does not affect control BAMs"
         doFixmate:              "Whether to add mate CIGAR (MC) tags before REDUX. Only consulted when run_redux is true and the sample is Illumina, since single-end reads have no mates to fix. Leave true for alignments that lack MC tags; set false when the aligner already wrote them, as bwa-mem2 does, to skip the per-chromosome fixmate scatter entirely. The inputs are still merged, because oncoanalyser's samplesheet accepts one file per sample and filetype, FASTQ excepted; REDUX itself would take a list"
         run_control:            "When true, also run purity estimation for each control BAM in the controls array (PE/WG_PE mode only)"
-        controls:               "PE mode: array of (control_id, bam_path) pairs; BAI assumed at bam_path+'.bai'. Controls are BAM only and always run with run_redux=false; used only when run_control=true"
+        controls:               "PE mode: array of (control_id, redux_dir) pairs, where redux_dir is an existing REDUX output directory holding {sample_id}.redux.bam, its index, and the bqr and jitter_params TSVs. REDUX is not run for controls: oncoanalyser takes the alignment and those TSVs from the directory, which it resolves by exact filename, so the file prefix must equal the sample id the alignment's @RG SM reports. Used only when run_control=true"
         outputFileNamePrefix:   "Output directory prefix; the pipeline writes to outputFileNamePrefix/group_id/"
         include_germline_outputs: "Whether to keep germline variant calls in the WG archive. Defaults false: germline calls play no part in MRD, since WISP reads the PURPLE somatic VCF and upstream purity_estimate.nf disables germline calling itself. Note they are still GENERATED -- oncoanalyser hardcodes germline calling on and it cannot be disabled from configuration -- so this drops sage/germline, pave/germline and the PURPLE germline files from the archive rather than skipping the work"
         allow_mixed_platforms:  "Guardrail. oncoanalyser applies ONE --sequencing_platform per pipeline run, so two samples of different platforms in the same run means one of them gets the wrong error model. Left false (the production default) such a combination fails before Nextflow starts. Set true only for deliberate experiments: the run proceeds with a loud warning"
@@ -476,7 +477,7 @@ workflow purityEstimateV3 {
                 modules                = modules
         }
 
-        # Controls are legacy GATK-processed BAMs; always skip redux regardless of run_redux.
+        # Controls come in as REDUX directories, so REDUX never runs for them.
         if (run_control) {
             scatter (control in select_first([controls, []])) {
                 call get_alignment_info as control_info {
@@ -487,8 +488,7 @@ workflow purityEstimateV3 {
                         group_id               = group_id,
                         subject_id             = control.left,
                         tumor_sample_id        = primary_sample_id,
-                        longitudinal_bam       = control.right,
-                        longitudinal_bai       = control.right + ".bai",
+                        longitudinal_redux_dir = control.right,
                         longitudinal_sample_id = control_info.sample_id,
                         run_redux              = false,
                         nextflow_stub          = nextflow_stub,
@@ -770,7 +770,14 @@ task get_alignment_info {
 
     command <<<
       set -euo pipefail
-      samtools view -H ~{aln_path} > header.txt
+      # A redux directory is accepted in place of an alignment: the sample id and platform
+      # come from the alignment's @RG line either way, and the directory holds one.
+      aln="~{aln_path}"
+      if [ -d "${aln}" ]; then
+        aln=$(ls "${aln}"/*.redux.bam)
+      fi
+
+      samtools view -H "${aln}" > header.txt
 
       # Sample ID from the first @RG SM tag.
       awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^SM:/){sub(/^SM:/,"",$i); print $i; exit}}' \
@@ -789,6 +796,7 @@ task get_alignment_info {
       awk '/^@RG/{for(i=1;i<=NF;i++) if($i~/^PL:/){sub(/^PL:/,"",$i); print tolower($i); exit}}' \
         header.txt > platform.txt
       [ -s platform.txt ] || echo illumina > platform.txt
+
     >>>
 
     output {
@@ -1901,8 +1909,9 @@ task run_purity_estimate {
         String  group_id
         String  subject_id
         String  tumor_sample_id
-        File    longitudinal_bam
-        File    longitudinal_bai
+        File?   longitudinal_bam
+        File?   longitudinal_bai
+        String? longitudinal_redux_dir
         String  longitudinal_sample_id
         Boolean run_redux
         Boolean nextflow_stub
@@ -1932,6 +1941,7 @@ task run_purity_estimate {
         tumor_sample_id:        "Primary tumour sample ID; must match the purple output filenames in wgts_outdir"
         longitudinal_bam:       "Longitudinal ctDNA BAM (merged if there were several inputs)"
         longitudinal_bai:       "Index for longitudinal_bam"
+        longitudinal_redux_dir: "An existing REDUX output directory for this sample. When given, REDUX is skipped and the alignment and its BQR and jitter TSVs are taken from the directory, which oncoanalyser resolves by exact {sample_id}.redux.* filename. Mutually exclusive with longitudinal_bam"
         longitudinal_sample_id: "Longitudinal sample ID used in the samplesheet"
         run_redux:              "When true REDUX processes the alignments; when false they are declared bam_redux with generate_redux_tsvs_only so REDUX only regenerates its TSVs"
         nextflow_stub:          "Run oncoanalyser with -stub --create_stub_placeholders: placeholder outputs, no real compute"
@@ -1959,15 +1969,26 @@ task run_purity_estimate {
       set -euo pipefail
       WORKDIR=$(pwd)
 
-      ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
-      ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
-
-      if ~{run_redux}; then
-        filetype="bam"
+      # A redux_dir input skips REDUX entirely: oncoanalyser takes both the alignment and
+      # the BQR and jitter TSVs from the directory, resolving them by exact
+      # {sample_id}.redux.* filename. The sample id comes from the alignment's @RG SM, so the
+      # file prefix has to agree with it. Nothing is staged; the directory is the filepath.
+      redux_dir="~{default="" longitudinal_redux_dir}"
+      if [ -n "${redux_dir}" ]; then
+        filetype="redux_dir"
         redux_info=""
+        long_path="${redux_dir}"
       else
-        filetype="bam_redux"
-        redux_info="generate_redux_tsvs_only"
+        ln -s "~{longitudinal_bam}" "${WORKDIR}/~{longitudinal_sample_id}.bam"
+        ln -s "~{longitudinal_bai}" "${WORKDIR}/~{longitudinal_sample_id}.bam.bai"
+        long_path="${WORKDIR}/~{longitudinal_sample_id}.bam"
+        if ~{run_redux}; then
+          filetype="bam"
+          redux_info=""
+        else
+          filetype="bam_redux"
+          redux_info="generate_redux_tsvs_only"
+        fi
       fi
 
       # The longitudinal sample carries longitudinal_sample, plus the redux hint when
@@ -2021,7 +2042,7 @@ task run_purity_estimate {
       {
         echo "group_id,subject_id,sample_id,sample_type,sequence_type,filetype,info,filepath"
         echo "~{group_id},~{subject_id},~{tumor_sample_id},tumor,dna,purple_dir,,${purple_dir}"
-        echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${WORKDIR}/~{longitudinal_sample_id}.bam"
+        echo "~{group_id},~{subject_id},~{longitudinal_sample_id},tumor,dna,${filetype},${long_info},${long_path}"
       } > samplesheet_purity.csv
 
       # -stub makes every process emit placeholder outputs, so the wrapper can be exercised

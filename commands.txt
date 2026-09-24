@@ -731,7 +731,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -763,7 +763,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --genome GRCh38_hmf \
           --processes_manual redux,amber,cobalt,sage,pave,purple \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -937,7 +937,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -970,7 +970,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --genome GRCh38_hmf \
           --processes_manual ${processes} \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \

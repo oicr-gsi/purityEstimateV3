@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-29
+### Added
+- A reduced summary, `{prefix}.wisp_SNV_summary.tsv`, carrying only the fields an
+  SNV-MRD assessment reads.
+
+### Changed
+- Label each summary row with the sample it measured rather than the subject, so
+  timepoints from one subject stay distinct when their summaries are read together.
+
 ## [1.4.0] - 2026-09-23
 ### Changed
 - Tracks the oncoanalyser 3.0.0 release rather than 3.0.0-rc.3: `modules` moves to

@@ -557,6 +557,10 @@ workflow purityEstimateV3 {
                 description: "TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.",
                 vidarr_label: "wispSummary"
             },
+            wisp_snv_summary: {
+                description: "The same table reduced to the fields an SNV-MRD assessment reads: the dual-strand fields, which apply to duplex sequencing, and the copy-number fields are left out. Produced in PE and WG_PE mode.",
+                vidarr_label: "wispSnvSummary"
+            },
             primary_site_report: {
                 description: "Plain-text report of the primary tumour's variant list: how many candidate sites survive each filter in turn, primary filters and the germline filter alike. The final count is the number of sites available for MRD assessment, which is what says whether a plasma sample is worth taking. Produced in WG and WG_PE mode.",
                 vidarr_label: "primarySiteReport"
@@ -580,6 +584,7 @@ workflow purityEstimateV3 {
         File? wg_tarball          = pack_wgts.wgts_tarball   # WG and WG_PE only
         File? wisp_tarballs       = collect_results.wisp_tarballs
         File? wisp_summary        = collect_results.wisp_summary
+        File? wisp_snv_summary    = collect_results.wisp_snv_summary
         File? primary_site_report = pre_filtering.site_report  # WG and WG_PE only
         File  pipeline_info       = pipeline_info_selected
     }
@@ -1597,6 +1602,35 @@ task collect_results {
             tail -n1 $f >> ~{outputFileNamePrefix}.wisp_summary.tsv
         done
 
+        ## a reduced table carrying only the fields an SNV-MRD assessment reads. Columns are
+        ## picked by name, so the dual-strand and copy-number fields are dropped whether or
+        ## not the run produced them, and a renamed column upstream fails here rather than
+        ## silently shifting the output.
+        snv_columns='TumorPurity TumorPloidy SNV_MRD TotalVariants CalcVariants
+                     SNVPurity RawSNVPurity SNVPValue SNVPurityLow SNVPurityHigh ClonalMethod
+                     Frag1Variants Frag2PlusVariants ClonalPeakVariants ClonalDropoutRate
+                     SNVLod TotalFragments AlleleFragments WeightedAvgDepth WeightedAvgVCN
+                     WeightedAvgCN PeakBandwidth PeakBandwidthLow PeakBandwidthHigh
+                     OutlierVariants ErrorRate RawBqrErrorRate BqrThreshold BqrExtraInfo'
+        awk -F'\t' -v cols="${snv_columns}" '
+             BEGIN { OFS = "\t"; n = split(cols, src, /[ \n]+/) }
+             NR == 1 {
+                 for (i = 1; i <= NF; i++) pos[$i] = i
+                 id = ("sample_id" in pos) ? "sample_id" : (("SampleId" in pos) ? "SampleId" : "")
+                 if (id == "") missing = " sample_id"
+                 for (j = 1; j <= n; j++) if (!(src[j] in pos)) missing = missing " " src[j]
+                 if (missing != "") {
+                     print "ERROR: the summary has no column(s):" missing > "/dev/stderr"
+                     exit 1 }
+                 line = "sample_id"
+                 for (j = 1; j <= n; j++) line = line OFS src[j]
+                 print line
+                 next }
+             { line = $(pos[id])
+               for (j = 1; j <= n; j++) line = line OFS $(pos[src[j]])
+               print line }' \
+            ~{outputFileNamePrefix}.wisp_summary.tsv > ~{outputFileNamePrefix}.wisp_SNV_summary.tsv
+
         ## retar the tarballs
         mkdir -p wisp
         for tgz in ~{subject_tarball} ~{sep=" " control_tarballs}
@@ -1607,8 +1641,9 @@ task collect_results {
     >>>
 
     output {
-        File wisp_tarballs = "~{outputFileNamePrefix}.wisp.tar.gz"
-        File wisp_summary  = "~{outputFileNamePrefix}.wisp_summary.tsv"
+        File wisp_tarballs   = "~{outputFileNamePrefix}.wisp.tar.gz"
+        File wisp_summary    = "~{outputFileNamePrefix}.wisp_summary.tsv"
+        File wisp_snv_summary = "~{outputFileNamePrefix}.wisp_SNV_summary.tsv"
     }
 
     runtime {
@@ -1928,7 +1963,7 @@ task run_purity_estimate {
 
     parameter_meta {
         group_id:               "Sample group identifier; used as output subdirectory and samplesheet group_id"
-        subject_id:             "Subject/patient identifier; prepended to the wisp summary row"
+        subject_id:             "Subject/patient identifier, written to the samplesheet"
         tumor_sample_id:        "Primary tumour sample ID; must match the purple output filenames in wgts_outdir"
         longitudinal_bam:       "Longitudinal ctDNA BAM (merged if there were several inputs)"
         longitudinal_bai:       "Index for longitudinal_bam"
@@ -2158,9 +2193,10 @@ task run_purity_estimate {
       wisp_dir="~{outdir}/~{group_id}/wisp"
       tar -czf ~{outdir}.wisp.tar.gz -C "$(dirname "$wisp_dir")" wisp/
 
-      # prepend subject_id as first column in summary
+      # Label the row with the sample it measured, not the subject: several timepoints from
+      # one subject are separate runs, and their summaries are read together afterwards.
       head -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/sample_id\t/' >  ~{outdir}.wisp_summary.tsv
-      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{subject_id}\t/' >> ~{outdir}.wisp_summary.tsv
+      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{longitudinal_sample_id}\t/' >> ~{outdir}.wisp_summary.tsv
 
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \

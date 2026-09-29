@@ -206,6 +206,7 @@ Output | Type | Description | Labels
 `wg_tarball`|File?|Tarball of oncoanalyser WGTS outputs (amber/, cobalt/, purple/, pave/, sage/) for the primary tumour sample; produced in WG and WG_PE mode. Used as the wgts_tarball input for a subsequent PE run. REDUX alignments are deliberately excluded to keep the archive small.|vidarr_label: wgTarball
 `wisp_tarballs`|File?|Combined tarball of WISP output directories for the subject longitudinal sample and all control samples; produced in PE and WG_PE mode.|vidarr_label: wispTarballs
 `wisp_summary`|File?|TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.|vidarr_label: wispSummary
+`wisp_snv_summary`|File?|The same table reduced to the fields an SNV-MRD assessment reads: the dual-strand fields, which apply to duplex sequencing, and the copy-number fields are left out. Produced in PE and WG_PE mode.|vidarr_label: wispSnvSummary
 `primary_site_report`|File?|Plain-text report of the primary tumour's variant list: how many candidate sites survive each filter in turn, primary filters and the germline filter alike. The final count is the number of sites available for MRD assessment, which is what says whether a plasma sample is worth taking. Produced in WG and WG_PE mode.|vidarr_label: primarySiteReport
 `pipeline_info`|File|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions); always produced. In WG_PE mode the PE run's copy is used.|vidarr_label: pipelineInfo
 
@@ -781,6 +782,35 @@ This section lists command(s) run by purityEstimateV3 workflow
             tail -n1 $f >> ~{outputFileNamePrefix}.wisp_summary.tsv
         done
 
+        ## a reduced table carrying only the fields an SNV-MRD assessment reads. Columns are
+        ## picked by name, so the dual-strand and copy-number fields are dropped whether or
+        ## not the run produced them, and a renamed column upstream fails here rather than
+        ## silently shifting the output.
+        snv_columns='TumorPurity TumorPloidy SNV_MRD TotalVariants CalcVariants
+                     SNVPurity RawSNVPurity SNVPValue SNVPurityLow SNVPurityHigh ClonalMethod
+                     Frag1Variants Frag2PlusVariants ClonalPeakVariants ClonalDropoutRate
+                     SNVLod TotalFragments AlleleFragments WeightedAvgDepth WeightedAvgVCN
+                     WeightedAvgCN PeakBandwidth PeakBandwidthLow PeakBandwidthHigh
+                     OutlierVariants ErrorRate RawBqrErrorRate BqrThreshold BqrExtraInfo'
+        awk -F'\t' -v cols="${snv_columns}" '
+             BEGIN { OFS = "\t"; n = split(cols, src, /[ \n]+/) }
+             NR == 1 {
+                 for (i = 1; i <= NF; i++) pos[$i] = i
+                 id = ("sample_id" in pos) ? "sample_id" : (("SampleId" in pos) ? "SampleId" : "")
+                 if (id == "") missing = " sample_id"
+                 for (j = 1; j <= n; j++) if (!(src[j] in pos)) missing = missing " " src[j]
+                 if (missing != "") {
+                     print "ERROR: the summary has no column(s):" missing > "/dev/stderr"
+                     exit 1 }
+                 line = "sample_id"
+                 for (j = 1; j <= n; j++) line = line OFS src[j]
+                 print line
+                 next }
+             { line = $(pos[id])
+               for (j = 1; j <= n; j++) line = line OFS $(pos[src[j]])
+               print line }' \
+            ~{outputFileNamePrefix}.wisp_summary.tsv > ~{outputFileNamePrefix}.wisp_SNV_summary.tsv
+
         ## retar the tarballs
         mkdir -p wisp
         for tgz in ~{subject_tarball} ~{sep=" " control_tarballs}
@@ -1194,9 +1224,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       wisp_dir="~{outdir}/~{group_id}/wisp"
       tar -czf ~{outdir}.wisp.tar.gz -C "$(dirname "$wisp_dir")" wisp/
 
-      # prepend subject_id as first column in summary
+      # Label the row with the sample it measured, not the subject: several timepoints from
+      # one subject are separate runs, and their summaries are read together afterwards.
       head -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/sample_id\t/' >  ~{outdir}.wisp_summary.tsv
-      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{subject_id}\t/' >> ~{outdir}.wisp_summary.tsv
+      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{longitudinal_sample_id}\t/' >> ~{outdir}.wisp_summary.tsv
 
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \

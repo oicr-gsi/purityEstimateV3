@@ -569,6 +569,35 @@ This section lists command(s) run by purityEstimateV3 workflow
             tail -n1 $f >> ~{outputFileNamePrefix}.wisp_summary.tsv
         done
 
+        ## a reduced table carrying only the fields an SNV-MRD assessment reads. Columns are
+        ## picked by name, so the dual-strand and copy-number fields are dropped whether or
+        ## not the run produced them, and a renamed column upstream fails here rather than
+        ## silently shifting the output.
+        snv_columns='TumorPurity TumorPloidy SNV_MRD TotalVariants CalcVariants
+                     SNVPurity RawSNVPurity SNVPValue SNVPurityLow SNVPurityHigh ClonalMethod
+                     Frag1Variants Frag2PlusVariants ClonalPeakVariants ClonalDropoutRate
+                     SNVLod TotalFragments AlleleFragments WeightedAvgDepth WeightedAvgVCN
+                     WeightedAvgCN PeakBandwidth PeakBandwidthLow PeakBandwidthHigh
+                     OutlierVariants ErrorRate RawBqrErrorRate BqrThreshold BqrExtraInfo'
+        awk -F'\t' -v cols="${snv_columns}" '
+             BEGIN { OFS = "\t"; n = split(cols, src, /[ \n]+/) }
+             NR == 1 {
+                 for (i = 1; i <= NF; i++) pos[$i] = i
+                 id = ("sample_id" in pos) ? "sample_id" : (("SampleId" in pos) ? "SampleId" : "")
+                 if (id == "") missing = " sample_id"
+                 for (j = 1; j <= n; j++) if (!(src[j] in pos)) missing = missing " " src[j]
+                 if (missing != "") {
+                     print "ERROR: the summary has no column(s):" missing > "/dev/stderr"
+                     exit 1 }
+                 line = "sample_id"
+                 for (j = 1; j <= n; j++) line = line OFS src[j]
+                 print line
+                 next }
+             { line = $(pos[id])
+               for (j = 1; j <= n; j++) line = line OFS $(pos[src[j]])
+               print line }' \
+            ~{outputFileNamePrefix}.wisp_summary.tsv > ~{outputFileNamePrefix}.wisp_SNV_summary.tsv
+
         ## retar the tarballs
         mkdir -p wisp
         for tgz in ~{subject_tarball} ~{sep=" " control_tarballs}
@@ -731,7 +760,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -763,7 +792,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --genome GRCh38_hmf \
           --processes_manual redux,amber,cobalt,sage,pave,purple \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -937,7 +966,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -970,7 +999,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --genome GRCh38_hmf \
           --processes_manual ${processes} \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -982,9 +1011,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       wisp_dir="~{outdir}/~{group_id}/wisp"
       tar -czf ~{outdir}.wisp.tar.gz -C "$(dirname "$wisp_dir")" wisp/
 
-      # prepend subject_id as first column in summary
+      # Label the row with the sample it measured, not the subject: several timepoints from
+      # one subject are separate runs, and their summaries are read together afterwards.
       head -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/sample_id\t/' >  ~{outdir}.wisp_summary.tsv
-      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{subject_id}\t/' >> ~{outdir}.wisp_summary.tsv
+      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{longitudinal_sample_id}\t/' >> ~{outdir}.wisp_summary.tsv
 
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \

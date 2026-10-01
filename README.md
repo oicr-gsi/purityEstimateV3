@@ -41,7 +41,7 @@ Platform is read per sample from the @RG PL tag; The wdl input `sequencing_platf
 
 ## Dependencies
 
-* [oncoanalyser 3.0.0-rc.3](https://github.com/nf-core/oncoanalyser)
+* [oncoanalyser 3.0.0](https://github.com/nf-core/oncoanalyser)
 * [nextflow 25.10.4](https://www.nextflow.io)
 * [samtools 1.16.1](https://github.com/samtools/samtools)
 * [hs38DH (GRCh38 full analysis set plus decoy plus HLA)](https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/)
@@ -87,7 +87,7 @@ Parameter|Value|Default|Description
 `slurm_account`|String?|None|Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed
 `singularity_binds`|Array[String]?|None|Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for
 `nextflow_config`|Array[String]?|None|Config overlays passed to nextflow, each with its own -c, in order. Leave null on SGE to use the overlay the oncoanalyser module ships. A site whose scheduler differs must supply its own, because that overlay sets the executor; split it so the settings that hold everywhere (genome paths, container overrides, per-process resources) stay in one file and only the executor and filesystem binds are per-site
-`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
+`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0 oncoanalyser-data/3.0.0--8"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
 
 
 #### Optional task parameters:
@@ -116,7 +116,7 @@ Parameter|Value|Default|Description
 `probe_longitudinal.modules`|String|"samtools/1.16.1"|Environment modules to load (samtools required)
 `probe_longitudinal.memory`|Int|4|Memory in GB
 `probe_longitudinal.timeout`|Int|1|Wall-clock timeout in hours
-`cram_tumor.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
+`cram_tumor.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0--8"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_tumor.threads`|Int|8|Number of samtools threads
 `cram_tumor.memory`|Int|16|Memory in GB
 `cram_tumor.timeout`|Int|24|Wall-clock timeout in hours
@@ -137,7 +137,7 @@ Parameter|Value|Default|Description
 `merge_tumor_plain.threads`|Int|8|Number of samtools threads
 `merge_tumor_plain.memory`|Int|16|Memory in GB
 `merge_tumor_plain.timeout`|Int|24|Wall-clock timeout in hours
-`cram_normal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
+`cram_normal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0--8"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_normal.threads`|Int|8|Number of samtools threads
 `cram_normal.memory`|Int|16|Memory in GB
 `cram_normal.timeout`|Int|24|Wall-clock timeout in hours
@@ -158,7 +158,7 @@ Parameter|Value|Default|Description
 `merge_normal_plain.threads`|Int|8|Number of samtools threads
 `merge_normal_plain.memory`|Int|16|Memory in GB
 `merge_normal_plain.timeout`|Int|24|Wall-clock timeout in hours
-`cram_longitudinal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
+`cram_longitudinal.modules`|String|"samtools/1.16.1 oncoanalyser-data/3.0.0--8"|Environment modules to load. samtools is required; oncoanalyser-data supplies $VENDOR_GENOME_HS38DH for cram_reference
 `cram_longitudinal.threads`|Int|8|Number of samtools threads
 `cram_longitudinal.memory`|Int|16|Memory in GB
 `cram_longitudinal.timeout`|Int|24|Wall-clock timeout in hours
@@ -206,6 +206,7 @@ Output | Type | Description | Labels
 `wg_tarball`|File?|Tarball of oncoanalyser WGTS outputs (amber/, cobalt/, purple/, pave/, sage/) for the primary tumour sample; produced in WG and WG_PE mode. Used as the wgts_tarball input for a subsequent PE run. REDUX alignments are deliberately excluded to keep the archive small.|vidarr_label: wgTarball
 `wisp_tarballs`|File?|Combined tarball of WISP output directories for the subject longitudinal sample and all control samples; produced in PE and WG_PE mode.|vidarr_label: wispTarballs
 `wisp_summary`|File?|TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.|vidarr_label: wispSummary
+`wisp_snv_summary`|File?|The same table reduced to the fields an SNV-MRD assessment reads: the dual-strand fields, which apply to duplex sequencing, and the copy-number fields are left out. Produced in PE and WG_PE mode.|vidarr_label: wispSnvSummary
 `primary_site_report`|File?|Plain-text report of the primary tumour's variant list: how many candidate sites survive each filter in turn, primary filters and the germline filter alike. The final count is the number of sites available for MRD assessment, which is what says whether a plasma sample is worth taking. Produced in WG and WG_PE mode.|vidarr_label: primarySiteReport
 `pipeline_info`|File|Tarball of the Nextflow pipeline_info/ directory (execution report, timeline, trace, DAG, params JSON, software versions); always produced. In WG_PE mode the PE run's copy is used.|vidarr_label: pipelineInfo
 
@@ -781,6 +782,35 @@ This section lists command(s) run by purityEstimateV3 workflow
             tail -n1 $f >> ~{outputFileNamePrefix}.wisp_summary.tsv
         done
 
+        ## a reduced table carrying only the fields an SNV-MRD assessment reads. Columns are
+        ## picked by name, so the dual-strand and copy-number fields are dropped whether or
+        ## not the run produced them, and a renamed column upstream fails here rather than
+        ## silently shifting the output.
+        snv_columns='TumorPurity TumorPloidy SNV_MRD TotalVariants CalcVariants
+                     SNVPurity RawSNVPurity SNVPValue SNVPurityLow SNVPurityHigh ClonalMethod
+                     Frag1Variants Frag2PlusVariants ClonalPeakVariants ClonalDropoutRate
+                     SNVLod TotalFragments AlleleFragments WeightedAvgDepth WeightedAvgVCN
+                     WeightedAvgCN PeakBandwidth PeakBandwidthLow PeakBandwidthHigh
+                     OutlierVariants ErrorRate RawBqrErrorRate BqrThreshold BqrExtraInfo'
+        awk -F'\t' -v cols="${snv_columns}" '
+             BEGIN { OFS = "\t"; n = split(cols, src, /[ \n]+/) }
+             NR == 1 {
+                 for (i = 1; i <= NF; i++) pos[$i] = i
+                 id = ("sample_id" in pos) ? "sample_id" : (("SampleId" in pos) ? "SampleId" : "")
+                 if (id == "") missing = " sample_id"
+                 for (j = 1; j <= n; j++) if (!(src[j] in pos)) missing = missing " " src[j]
+                 if (missing != "") {
+                     print "ERROR: the summary has no column(s):" missing > "/dev/stderr"
+                     exit 1 }
+                 line = "sample_id"
+                 for (j = 1; j <= n; j++) line = line OFS src[j]
+                 print line
+                 next }
+             { line = $(pos[id])
+               for (j = 1; j <= n; j++) line = line OFS $(pos[src[j]])
+               print line }' \
+            ~{outputFileNamePrefix}.wisp_summary.tsv > ~{outputFileNamePrefix}.wisp_SNV_summary.tsv
+
         ## retar the tarballs
         mkdir -p wisp
         for tgz in ~{subject_tarball} ~{sep=" " control_tarballs}
@@ -943,7 +973,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -975,7 +1005,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --genome GRCh38_hmf \
           --processes_manual redux,amber,cobalt,sage,pave,purple \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -1149,7 +1179,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -1182,7 +1212,7 @@ This section lists command(s) run by purityEstimateV3 workflow
           --genome GRCh38_hmf \
           --processes_manual ${processes} \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -1194,9 +1224,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       wisp_dir="~{outdir}/~{group_id}/wisp"
       tar -czf ~{outdir}.wisp.tar.gz -C "$(dirname "$wisp_dir")" wisp/
 
-      # prepend subject_id as first column in summary
+      # Label the row with the sample it measured, not the subject: several timepoints from
+      # one subject are separate runs, and their summaries are read together afterwards.
       head -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/sample_id\t/' >  ~{outdir}.wisp_summary.tsv
-      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{subject_id}\t/' >> ~{outdir}.wisp_summary.tsv
+      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{longitudinal_sample_id}\t/' >> ~{outdir}.wisp_summary.tsv
 
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \

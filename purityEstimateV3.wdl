@@ -61,7 +61,7 @@ workflow purityEstimateV3 {
         String?       slurm_account           # see parameter_meta
         Array[String]? singularity_binds      # null = keep the binds the module's overlay sets
         Array[String]? nextflow_config        # null = the module's config for `scheduler`
-        String        modules = "java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0-rc.3 oncoanalyser-data/3.0.0"
+        String        modules = "java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0 oncoanalyser-data/3.0.0--8"
     }
 
     parameter_meta {
@@ -528,7 +528,7 @@ workflow purityEstimateV3 {
         description: "Runs HMF oncoanalyser 3.0.0-rc.3 to estimate tumour purity in longitudinal ctDNA samples, for Illumina or Ultima Genomics data. In WG mode it runs WGTS (REDUX, AMBER, COBALT, SAGE, PAVE, PURPLE) on a primary tumour with an optional matched normal and produces a tarball of the results. In PE mode it runs WISP against a pre-existing WG tarball to report the ctDNA fraction of a longitudinal sample. WG_PE does both in sequence. BAM and CRAM are both accepted.\n\n![purityEstimateV3 workflow](docs/purityEstimateV3.svg)\n\nIn the chart the two head-job boxes are where Cromwell stops and Nextflow starts: `run_wgts` and `run_purity_estimate` are each a SINGLE Cromwell task that runs `nextflow run`, and every process inside them is submitted to the cluster by Nextflow itself. A run directory therefore holds far fewer `call-` directories than there are tools. Diagram source is Graphviz, in docs/.\n\n### Valid input combinations\n\n| mode | tumor_alignments | normal_alignments | longitudinal_alignments | wgts_tarball |\n|---|---|---|---|---|\n| WG | required | **required** | - | - |\n| PE | - | not used | required | required |\n| WG_PE | required | **required** | required | - |\n\n`normal_alignments` is used only by the WG step, for tumour/normal somatic calling, and it is REQUIRED there. Do not supply it in PE mode: the PE step does not pass the normal to WISP, so it would be staged (CRAM conversion, fixmate, merge) at real cost and then discarded. \n\nNormal alignments is required because without a matched normal, SAGE has no reference against which to subtract germline variants, so the primary somatic call set is dominated by germline sites. Those are present in the patient own cfDNA at heterozygous and homozygous frequencies, and WISP measures them at high VAF and reports the result as tumour fraction.\n\n### Inputs with mixed platform (Illumina or Ultima)\n\noncoanalyser applies a single --sequencing_platform to a whole pipeline run and never checks it against the BAM headers, so two samples of different platforms in one run means one of them is analysed with the wrong error model, silently.\n\nNote that a run here means one oncoanalyser (Nextflow) invocation, not one WDL job. WG_PE launches two runs, so it can legitimately span platforms: the WG run uses the primary's platform and the PE run uses the longitudinal sample's.\n\nPlatform is read per sample from the @RG PL tag; The wdl input `sequencing_platform` overrides it for data with a missing or wrong tag. Note:\n\n* fixmate is applied only to Illumina samples. Ultima reads are single-end, and fixmate would drop every record and leave a header-only BAM.\n* the WG run requires its tumour and normal to agree, and refuses to launch otherwise. `allow_mixed_platforms` overrides this, at the cost of one sample being analysed with the wrong error model.\n\n### Note on deliverables of wdl\n\n**Germline calls are generated but not delivered.** oncoanalyser calls germline variants whenever a matched normal is present, and this cannot be switched off from configuration. They are therefore still produced, but excluded from the WG results because MRD assay does not use them. Set `include_germline_outputs` to true to keep `sage/germline/`, `pave/germline/` and the PURPLE germline files. \n\n**The WG archive carries two somatic VCFs.** `<sample>.purple.somatic.vcf.gz` is PURPLE's full call set, untouched. `<sample>.purple.somatic.prefiltered.vcf.gz` is the same call set reduced to the sites that can carry MRD signal, by the primary filters (mappability, repeat count, SNV only, tier, nearby indel, subclonal) and by the germline filter that WISP documents but cannot apply, since oncoanalyser gives it no reference genotype. `primary_site_report` gives the per-filter breakdown. In PE mode `use_primary_filters` chooses which of the two the plasma stage works from; note that WISP applies the primary filters itself either way, and records the reason per site, so the prefiltered VCF is a deliverable rather than a correction.\n\n**LOH is not available in any configuration this workflow can currently produce.** Purity therefore comes from SNVs and COBALT copy number only. "
         dependencies: [
             {
-                name: "oncoanalyser/3.0.0-rc.3",
+                name: "oncoanalyser/3.0.0",
                 url: "https://github.com/nf-core/oncoanalyser"
             },
             {
@@ -557,6 +557,10 @@ workflow purityEstimateV3 {
                 description: "TSV file with one header row and one data row per sample (subject + controls) showing the WISP-estimated ctDNA purity fraction; produced in PE and WG_PE mode.",
                 vidarr_label: "wispSummary"
             },
+            wisp_snv_summary: {
+                description: "The same table reduced to the fields an SNV-MRD assessment reads: the dual-strand fields, which apply to duplex sequencing, and the copy-number fields are left out. Produced in PE and WG_PE mode.",
+                vidarr_label: "wispSnvSummary"
+            },
             primary_site_report: {
                 description: "Plain-text report of the primary tumour's variant list: how many candidate sites survive each filter in turn, primary filters and the germline filter alike. The final count is the number of sites available for MRD assessment, which is what says whether a plasma sample is worth taking. Produced in WG and WG_PE mode.",
                 vidarr_label: "primarySiteReport"
@@ -580,6 +584,7 @@ workflow purityEstimateV3 {
         File? wg_tarball          = pack_wgts.wgts_tarball   # WG and WG_PE only
         File? wisp_tarballs       = collect_results.wisp_tarballs
         File? wisp_summary        = collect_results.wisp_summary
+        File? wisp_snv_summary    = collect_results.wisp_snv_summary
         File? primary_site_report = pre_filtering.site_report  # WG and WG_PE only
         File  pipeline_info       = pipeline_info_selected
     }
@@ -817,7 +822,7 @@ task cram_to_bam {
         File   aln
         File   idx
         String cram_reference
-        String modules = "samtools/1.16.1 oncoanalyser-data/3.0.0"
+        String modules = "samtools/1.16.1 oncoanalyser-data/3.0.0--8"
         Int threads = 8
         Int memory  = 16
         Int timeout = 24
@@ -1597,6 +1602,35 @@ task collect_results {
             tail -n1 $f >> ~{outputFileNamePrefix}.wisp_summary.tsv
         done
 
+        ## a reduced table carrying only the fields an SNV-MRD assessment reads. Columns are
+        ## picked by name, so the dual-strand and copy-number fields are dropped whether or
+        ## not the run produced them, and a renamed column upstream fails here rather than
+        ## silently shifting the output.
+        snv_columns='TumorPurity TumorPloidy SNV_MRD TotalVariants CalcVariants
+                     SNVPurity RawSNVPurity SNVPValue SNVPurityLow SNVPurityHigh ClonalMethod
+                     Frag1Variants Frag2PlusVariants ClonalPeakVariants ClonalDropoutRate
+                     SNVLod TotalFragments AlleleFragments WeightedAvgDepth WeightedAvgVCN
+                     WeightedAvgCN PeakBandwidth PeakBandwidthLow PeakBandwidthHigh
+                     OutlierVariants ErrorRate RawBqrErrorRate BqrThreshold BqrExtraInfo'
+        awk -F'\t' -v cols="${snv_columns}" '
+             BEGIN { OFS = "\t"; n = split(cols, src, /[ \n]+/) }
+             NR == 1 {
+                 for (i = 1; i <= NF; i++) pos[$i] = i
+                 id = ("sample_id" in pos) ? "sample_id" : (("SampleId" in pos) ? "SampleId" : "")
+                 if (id == "") missing = " sample_id"
+                 for (j = 1; j <= n; j++) if (!(src[j] in pos)) missing = missing " " src[j]
+                 if (missing != "") {
+                     print "ERROR: the summary has no column(s):" missing > "/dev/stderr"
+                     exit 1 }
+                 line = "sample_id"
+                 for (j = 1; j <= n; j++) line = line OFS src[j]
+                 print line
+                 next }
+             { line = $(pos[id])
+               for (j = 1; j <= n; j++) line = line OFS $(pos[src[j]])
+               print line }' \
+            ~{outputFileNamePrefix}.wisp_summary.tsv > ~{outputFileNamePrefix}.wisp_SNV_summary.tsv
+
         ## retar the tarballs
         mkdir -p wisp
         for tgz in ~{subject_tarball} ~{sep=" " control_tarballs}
@@ -1607,8 +1641,9 @@ task collect_results {
     >>>
 
     output {
-        File wisp_tarballs = "~{outputFileNamePrefix}.wisp.tar.gz"
-        File wisp_summary  = "~{outputFileNamePrefix}.wisp_summary.tsv"
+        File wisp_tarballs   = "~{outputFileNamePrefix}.wisp.tar.gz"
+        File wisp_summary    = "~{outputFileNamePrefix}.wisp_summary.tsv"
+        File wisp_snv_summary = "~{outputFileNamePrefix}.wisp_SNV_summary.tsv"
     }
 
     runtime {
@@ -1665,7 +1700,7 @@ task run_wgts {
         nextflow_stub:       "Run oncoanalyser with -stub --create_stub_placeholders: placeholder outputs, no real compute"
         sequencing_platform: "Value for --sequencing_platform: illumina, sbx or ultima"
         outdir:              "Output directory; the pipeline writes to outdir/group_id/"
-        ref_data_dir:        "HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
+        ref_data_dir:        "HMF reference data directory, used for --igenomes_base, --ref_data_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
         images_dir:          "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR); normally the literal $IMAGES_DIR, expanded by the shell after the oncoanalyser module loads"
         pipeline_dir:        "oncoanalyser checkout containing main.nf; normally the literal $ONCOANALYSER_FOLDER"
         nextflow_bin:        "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
@@ -1834,7 +1869,7 @@ task run_wgts {
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -1866,7 +1901,7 @@ task run_wgts {
           --genome GRCh38_hmf \
           --processes_manual redux,amber,cobalt,sage,pave,purple \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -1928,7 +1963,7 @@ task run_purity_estimate {
 
     parameter_meta {
         group_id:               "Sample group identifier; used as output subdirectory and samplesheet group_id"
-        subject_id:             "Subject/patient identifier; prepended to the wisp summary row"
+        subject_id:             "Subject/patient identifier, written to the samplesheet"
         tumor_sample_id:        "Primary tumour sample ID; must match the purple output filenames in wgts_outdir"
         longitudinal_bam:       "Longitudinal ctDNA BAM (merged if there were several inputs)"
         longitudinal_bai:       "Index for longitudinal_bam"
@@ -1939,7 +1974,7 @@ task run_purity_estimate {
         primary_purple_dir:     "PURPLE directory of the primary, holding both the full somatic VCF and the prefiltered one. Which of the two SAGE_APPEND sees is decided by use_primary_filters"
         use_primary_filters:    "When true, stage the prefiltered somatic VCF under the canonical filename so SAGE_APPEND works from the reduced site list. oncoanalyser resolves that VCF by exact name, which is why this is a staged copy rather than a different path"
         outdir:                 "Output directory; the pipeline writes to outdir/group_id/"
-        ref_data_dir:           "HMF reference data directory, used for --igenomes_base, --hmf_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
+        ref_data_dir:           "HMF reference data directory, used for --igenomes_base, --ref_data_genomes_base and --ref_data_hmf_data_path; normally the literal $REFERENCE_FILES_DIR"
         images_dir:             "Singularity image cache directory (NXF_SINGULARITY_CACHEDIR); normally the literal $IMAGES_DIR, expanded by the shell after the oncoanalyser module loads"
         pipeline_dir:           "oncoanalyser checkout containing main.nf; normally the literal $ONCOANALYSER_FOLDER"
         nextflow_bin:           "Nextflow executable; defaults to `nextflow` on PATH, with the version pinned by the module's NXF_VER. Must resolve to 25.10.0 or newer"
@@ -2113,7 +2148,7 @@ task run_purity_estimate {
           # directives scale with task.attempt, which is otherwise unreachable. Add that one
           # case to the list rather than retrying everything, so a tool error still fails at
           # once. Selectors in the pipeline's own config stay more specific and still win.
-          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + 175) ? 'retry' : 'finish' }"
+          echo "    errorStrategy = { task.exitStatus == Integer.MAX_VALUE || task.exitStatus in ((130..145) + 104 + (175..177)) ? 'retry' : 'finish' }"
           echo "    maxRetries = 1"
           # Always emitted, with or without an account: it also replaces the request the
           # shipped overlay writes in the other scheduler's syntax, which sbatch rejects.
@@ -2146,7 +2181,7 @@ task run_purity_estimate {
           --genome GRCh38_hmf \
           --processes_manual ${processes} \
           --igenomes_base ~{ref_data_dir} \
-          --hmf_genomes_base ~{ref_data_dir} \
+          --ref_data_genomes_base ~{ref_data_dir} \
           --ref_data_hmf_data_path ~{ref_data_dir} \
           -profile singularity \
           "${config_args[@]}" \
@@ -2158,9 +2193,10 @@ task run_purity_estimate {
       wisp_dir="~{outdir}/~{group_id}/wisp"
       tar -czf ~{outdir}.wisp.tar.gz -C "$(dirname "$wisp_dir")" wisp/
 
-      # prepend subject_id as first column in summary
+      # Label the row with the sample it measured, not the subject: several timepoints from
+      # one subject are separate runs, and their summaries are read together afterwards.
       head -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/sample_id\t/' >  ~{outdir}.wisp_summary.tsv
-      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{subject_id}\t/' >> ~{outdir}.wisp_summary.tsv
+      tail -n1 "$wisp_dir"/*.wisp.summary.tsv | sed 's/^/~{longitudinal_sample_id}\t/' >> ~{outdir}.wisp_summary.tsv
 
       tar -czf ~{outdir}.pipeline_info.tar.gz \
           -C "${abs_outdir}" \

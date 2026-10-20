@@ -897,6 +897,31 @@ This section lists command(s) run by purityEstimateV3 workflow
       # limits that probe would report.
       export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
+
+      # An image is unpacked into a sandbox and then run from there, so this has to be
+      # writable and allow execution. Each candidate is tested by running something from it
+      # rather than assumed, because what the schedulers offer differs: a per-job directory
+      # under /tmp here, node-local scratch there, nothing at all somewhere else. Bare /tmp
+      # is refused even where it works, since it is the path being mounted noexec as
+      # clusters are hardened.
+      container_tmp=""
+      for tmp_candidate in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
+        [ -n "${tmp_candidate}" ] && [ "${tmp_candidate}" != "/tmp" ] || continue
+        [ -d "${tmp_candidate}" ] && [ -w "${tmp_candidate}" ] || continue
+        probe=$(mktemp "${tmp_candidate}/exectest.XXXXXX" 2>/dev/null) || continue
+        printf '#!/bin/sh\nexit 0\n' > "${probe}"
+        if chmod +x "${probe}" 2>/dev/null && "${probe}" 2>/dev/null; then
+          rm -f "${probe}"
+          container_tmp="${tmp_candidate}"
+          break
+        fi
+        rm -f "${probe}"
+      done
+      [ -n "${container_tmp}" ] || {
+        echo "ERROR: no writable directory that allows execution; set TMP to one" >&2
+        exit 1
+      }
+      export APPTAINER_TMPDIR="${container_tmp}" SINGULARITY_TMPDIR="${container_tmp}"
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
       # sibling directory that does have plugins/.
@@ -1104,6 +1129,31 @@ This section lists command(s) run by purityEstimateV3 workflow
       # limits that probe would report.
       export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
+
+      # An image is unpacked into a sandbox and then run from there, so this has to be
+      # writable and allow execution. Each candidate is tested by running something from it
+      # rather than assumed, because what the schedulers offer differs: a per-job directory
+      # under /tmp here, node-local scratch there, nothing at all somewhere else. Bare /tmp
+      # is refused even where it works, since it is the path being mounted noexec as
+      # clusters are hardened.
+      container_tmp=""
+      for tmp_candidate in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
+        [ -n "${tmp_candidate}" ] && [ "${tmp_candidate}" != "/tmp" ] || continue
+        [ -d "${tmp_candidate}" ] && [ -w "${tmp_candidate}" ] || continue
+        probe=$(mktemp "${tmp_candidate}/exectest.XXXXXX" 2>/dev/null) || continue
+        printf '#!/bin/sh\nexit 0\n' > "${probe}"
+        if chmod +x "${probe}" 2>/dev/null && "${probe}" 2>/dev/null; then
+          rm -f "${probe}"
+          container_tmp="${tmp_candidate}"
+          break
+        fi
+        rm -f "${probe}"
+      done
+      [ -n "${container_tmp}" ] || {
+        echo "ERROR: no writable directory that allows execution; set TMP to one" >&2
+        exit 1
+      }
+      export APPTAINER_TMPDIR="${container_tmp}" SINGULARITY_TMPDIR="${container_tmp}"
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
       # sibling directory that does have plugins/.

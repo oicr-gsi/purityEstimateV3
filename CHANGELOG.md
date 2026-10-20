@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-10-16
+### Fixed
+- Unpack container images somewhere that allows execution. The runtime's own default
+  reaches a directory mounted noexec on some clusters, where unpacking succeeds and the
+  first command inside the container fails. Each candidate is now tested by running
+  something from it, bare `/tmp` is refused, and a run where none is usable stops with
+  that reason rather than part way into a container.
+
 ## [1.5.0] - 2026-09-29
 ### Added
 - A reduced summary, `{prefix}.wisp_SNV_summary.tsv`, carrying only the fields an

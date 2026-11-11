@@ -1880,10 +1880,43 @@ task run_wgts {
       # values that vary by site are substituted; the shape is the same everywhere.
       if [ "~{scheduler}" = "slurm" ]; then
         bind_list=(~{sep=" " singularity_binds})
+        # Nextflow launches the container with the environment cleared except for PATH, so
+        # the setting exported above never reaches the runtime in a process: it falls back
+        # to its built-in default and unpacks the image onto a noexec mount. Carry it in
+        # with a wrapper early on PATH, which runs the real binary resolved while the
+        # wrapper is written rather than through PATH, so it cannot call itself. The
+        # directory is chosen here rather than inherited, because the node that unpacks the
+        # image is not the one that wrote this file. The quoted heredoc keeps the snippet
+        # literal; it reaches a Groovy quoted string too, which would process a backslash
+        # escape, so it has to stay free of them.
+        container_before=$(cat << 'BEFOREEOF'
+for d in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
+  [ -n "$d" ] && [ "$d" != "/tmp" ] && [ -d "$d" ] && [ -w "$d" ] || continue
+  p=$(mktemp "$d/exectest.XXXXXX" 2>/dev/null) || continue
+  { echo '#!/bin/sh'; echo 'exit 0'; } > "$p"
+  if chmod +x "$p" 2>/dev/null && "$p" 2>/dev/null; then rm -f "$p"; export TMPDIR="$d"; break; fi
+  rm -f "$p"
+done
+[ -n "${TMPDIR:-}" ] && [ "${TMPDIR}" != "/tmp" ] || { echo "ERROR: no writable directory that allows execution; set TMP to one" >&2; exit 1; }
+export SINGULARITY_TMPDIR="${TMPDIR}" APPTAINER_TMPDIR="${TMPDIR}"
+shim="${PWD}/.container-shim"
+mkdir -p "${shim}"
+for exe in singularity apptainer; do
+  real=$(command -v "${exe}" 2>/dev/null) || continue
+  { echo '#!/bin/sh'
+    echo "export SINGULARITY_TMPDIR=${TMPDIR} APPTAINER_TMPDIR=${TMPDIR}"
+    echo "exec ${real} " '"$@"'
+  } > "${shim}/${exe}"
+  chmod +x "${shim}/${exe}"
+done
+export PATH="${shim}:${PATH}"
+BEFOREEOF
+)
         {
           echo "executor { name = 'slurm' }"
           echo "process {"
           echo "    queue = '~{slurm_partition}'"
+          echo "    beforeScript = '''${container_before}'''"
           # Slurm enforces the memory request as RSS. A JVM sized at the module default of
           # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
           # kills the job. Keep a quarter of the request outside the heap. Processes that do
@@ -2184,10 +2217,43 @@ task run_purity_estimate {
       # values that vary by site are substituted; the shape is the same everywhere.
       if [ "~{scheduler}" = "slurm" ]; then
         bind_list=(~{sep=" " singularity_binds})
+        # Nextflow launches the container with the environment cleared except for PATH, so
+        # the setting exported above never reaches the runtime in a process: it falls back
+        # to its built-in default and unpacks the image onto a noexec mount. Carry it in
+        # with a wrapper early on PATH, which runs the real binary resolved while the
+        # wrapper is written rather than through PATH, so it cannot call itself. The
+        # directory is chosen here rather than inherited, because the node that unpacks the
+        # image is not the one that wrote this file. The quoted heredoc keeps the snippet
+        # literal; it reaches a Groovy quoted string too, which would process a backslash
+        # escape, so it has to stay free of them.
+        container_before=$(cat << 'BEFOREEOF'
+for d in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
+  [ -n "$d" ] && [ "$d" != "/tmp" ] && [ -d "$d" ] && [ -w "$d" ] || continue
+  p=$(mktemp "$d/exectest.XXXXXX" 2>/dev/null) || continue
+  { echo '#!/bin/sh'; echo 'exit 0'; } > "$p"
+  if chmod +x "$p" 2>/dev/null && "$p" 2>/dev/null; then rm -f "$p"; export TMPDIR="$d"; break; fi
+  rm -f "$p"
+done
+[ -n "${TMPDIR:-}" ] && [ "${TMPDIR}" != "/tmp" ] || { echo "ERROR: no writable directory that allows execution; set TMP to one" >&2; exit 1; }
+export SINGULARITY_TMPDIR="${TMPDIR}" APPTAINER_TMPDIR="${TMPDIR}"
+shim="${PWD}/.container-shim"
+mkdir -p "${shim}"
+for exe in singularity apptainer; do
+  real=$(command -v "${exe}" 2>/dev/null) || continue
+  { echo '#!/bin/sh'
+    echo "export SINGULARITY_TMPDIR=${TMPDIR} APPTAINER_TMPDIR=${TMPDIR}"
+    echo "exec ${real} " '"$@"'
+  } > "${shim}/${exe}"
+  chmod +x "${shim}/${exe}"
+done
+export PATH="${shim}:${PATH}"
+BEFOREEOF
+)
         {
           echo "executor { name = 'slurm' }"
           echo "process {"
           echo "    queue = '~{slurm_partition}'"
+          echo "    beforeScript = '''${container_before}'''"
           # Slurm enforces the memory request as RSS. A JVM sized at the module default of
           # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
           # kills the job. Keep a quarter of the request outside the heap. Processes that do

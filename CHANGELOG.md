@@ -10,7 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches a directory mounted noexec on some clusters, where unpacking succeeds and the
   first command inside the container fails. Each candidate is now tested by running
   something from it, bare `/tmp` is refused, and a run where none is usable stops with
-  that reason rather than part way into a container.
+  that reason rather than part way into a container. The pipeline's own processes get the
+  setting through a wrapper placed on `PATH`, since Nextflow launches a container with the
+  environment cleared except for `PATH`, and they choose their own directory, since the
+  node that unpacks an image is not the one that generated the config.
 
 ## [1.5.0] - 2026-09-29
 ### Added

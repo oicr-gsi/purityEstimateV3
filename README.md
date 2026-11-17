@@ -41,7 +41,7 @@ Platform is read per sample from the @RG PL tag; The wdl input `sequencing_platf
 
 ## Dependencies
 
-* [oncoanalyser 3.0.0](https://github.com/nf-core/oncoanalyser)
+* [oncoanalyser 3.0.0.1](https://github.com/nf-core/oncoanalyser)
 * [nextflow 25.10.4](https://www.nextflow.io)
 * [samtools 1.16.1](https://github.com/samtools/samtools)
 * [hs38DH (GRCh38 full analysis set plus decoy plus HLA)](https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/)
@@ -87,7 +87,7 @@ Parameter|Value|Default|Description
 `slurm_account`|String?|None|Accounting group for the jobs Nextflow submits, when the site requires one. Also clears the resource request the module's overlay writes in the other scheduler's syntax, which sbatch would reject, so leave it null only where no account is needed
 `singularity_binds`|Array[String]?|None|Filesystem paths bound into every container, replacing the bind the module's overlay sets. Leave null where the containers can already reach the reference data and the working directory, which is the case when the run shares a filesystem with the site the module was built for
 `nextflow_config`|Array[String]?|None|Config overlays passed to nextflow, each with its own -c, in order. Leave null on SGE to use the overlay the oncoanalyser module ships. A site whose scheduler differs must supply its own, because that overlay sets the executor; split it so the settings that hold everywhere (genome paths, container overrides, per-process resources) stay in one file and only the executor and filesystem binds are per-site
-`modules`|String|"java/17 singularity/3.9.4 samtools/1.16.1 oncoanalyser/3.0.0 oncoanalyser-data/3.0.0--8"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
+`modules`|String|"java/17 apptainer/1.4.5 samtools/1.16.1 oncoanalyser/3.0.0.1 oncoanalyser-data/3.0.0--8"|Environment modules to load. The oncoanalyser module supplies the pipeline checkout, the container image cache, NEXTFLOW_HOME, the scheduler submit wrapper, the site config overlay and the Nextflow launcher; the oncoanalyser-data module supplies the reference bundle. The resource paths below read variables exported by both, so the module versions here and those paths must stay in step
 
 
 #### Optional task parameters:
@@ -898,30 +898,6 @@ This section lists command(s) run by purityEstimateV3 workflow
       export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
 
-      # An image is unpacked into a sandbox and then run from there, so this has to be
-      # writable and allow execution. Each candidate is tested by running something from it
-      # rather than assumed, because what the schedulers offer differs: a per-job directory
-      # under /tmp here, node-local scratch there, nothing at all somewhere else. Bare /tmp
-      # is refused even where it works, since it is the path being mounted noexec as
-      # clusters are hardened.
-      container_tmp=""
-      for tmp_candidate in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
-        [ -n "${tmp_candidate}" ] && [ "${tmp_candidate}" != "/tmp" ] || continue
-        [ -d "${tmp_candidate}" ] && [ -w "${tmp_candidate}" ] || continue
-        probe=$(mktemp "${tmp_candidate}/exectest.XXXXXX" 2>/dev/null) || continue
-        printf '#!/bin/sh\nexit 0\n' > "${probe}"
-        if chmod +x "${probe}" 2>/dev/null && "${probe}" 2>/dev/null; then
-          rm -f "${probe}"
-          container_tmp="${tmp_candidate}"
-          break
-        fi
-        rm -f "${probe}"
-      done
-      [ -n "${container_tmp}" ] || {
-        echo "ERROR: no writable directory that allows execution; set TMP to one" >&2
-        exit 1
-      }
-      export APPTAINER_TMPDIR="${container_tmp}" SINGULARITY_TMPDIR="${container_tmp}"
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
       # sibling directory that does have plugins/.
@@ -984,43 +960,10 @@ This section lists command(s) run by purityEstimateV3 workflow
       # values that vary by site are substituted; the shape is the same everywhere.
       if [ "~{scheduler}" = "slurm" ]; then
         bind_list=(~{sep=" " singularity_binds})
-        # Nextflow launches the container with the environment cleared except for PATH, so
-        # the setting exported above never reaches the runtime in a process: it falls back
-        # to its built-in default and unpacks the image onto a noexec mount. Carry it in
-        # with a wrapper early on PATH, which runs the real binary resolved while the
-        # wrapper is written rather than through PATH, so it cannot call itself. The
-        # directory is chosen here rather than inherited, because the node that unpacks the
-        # image is not the one that wrote this file. The quoted heredoc keeps the snippet
-        # literal; it reaches a Groovy quoted string too, which would process a backslash
-        # escape, so it has to stay free of them.
-        container_before=$(cat << 'BEFOREEOF'
-for d in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
-  [ -n "$d" ] && [ "$d" != "/tmp" ] && [ -d "$d" ] && [ -w "$d" ] || continue
-  p=$(mktemp "$d/exectest.XXXXXX" 2>/dev/null) || continue
-  { echo '#!/bin/sh'; echo 'exit 0'; } > "$p"
-  if chmod +x "$p" 2>/dev/null && "$p" 2>/dev/null; then rm -f "$p"; export TMPDIR="$d"; break; fi
-  rm -f "$p"
-done
-[ -n "${TMPDIR:-}" ] && [ "${TMPDIR}" != "/tmp" ] || { echo "ERROR: no writable directory that allows execution; set TMP to one" >&2; exit 1; }
-export SINGULARITY_TMPDIR="${TMPDIR}" APPTAINER_TMPDIR="${TMPDIR}"
-shim="${PWD}/.container-shim"
-mkdir -p "${shim}"
-for exe in singularity apptainer; do
-  real=$(command -v "${exe}" 2>/dev/null) || continue
-  { echo '#!/bin/sh'
-    echo "export SINGULARITY_TMPDIR=${TMPDIR} APPTAINER_TMPDIR=${TMPDIR}"
-    echo "exec ${real} " '"$@"'
-  } > "${shim}/${exe}"
-  chmod +x "${shim}/${exe}"
-done
-export PATH="${shim}:${PATH}"
-BEFOREEOF
-)
         {
           echo "executor { name = 'slurm' }"
           echo "process {"
           echo "    queue = '~{slurm_partition}'"
-          echo "    beforeScript = '''${container_before}'''"
           # Slurm enforces the memory request as RSS. A JVM sized at the module default of
           # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
           # kills the job. Keep a quarter of the request outside the heap. Processes that do
@@ -1163,30 +1106,6 @@ BEFOREEOF
       export NXF_OPTS="-Xms512m -Xmx8g -XX:-UseContainerSupport"
       export NXF_SINGULARITY_CACHEDIR=~{images_dir}
 
-      # An image is unpacked into a sandbox and then run from there, so this has to be
-      # writable and allow execution. Each candidate is tested by running something from it
-      # rather than assumed, because what the schedulers offer differs: a per-job directory
-      # under /tmp here, node-local scratch there, nothing at all somewhere else. Bare /tmp
-      # is refused even where it works, since it is the path being mounted noexec as
-      # clusters are hardened.
-      container_tmp=""
-      for tmp_candidate in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
-        [ -n "${tmp_candidate}" ] && [ "${tmp_candidate}" != "/tmp" ] || continue
-        [ -d "${tmp_candidate}" ] && [ -w "${tmp_candidate}" ] || continue
-        probe=$(mktemp "${tmp_candidate}/exectest.XXXXXX" 2>/dev/null) || continue
-        printf '#!/bin/sh\nexit 0\n' > "${probe}"
-        if chmod +x "${probe}" 2>/dev/null && "${probe}" 2>/dev/null; then
-          rm -f "${probe}"
-          container_tmp="${tmp_candidate}"
-          break
-        fi
-        rm -f "${probe}"
-      done
-      [ -n "${container_tmp}" ] || {
-        echo "ERROR: no writable directory that allows execution; set TMP to one" >&2
-        exit 1
-      }
-      export APPTAINER_TMPDIR="${container_tmp}" SINGULARITY_TMPDIR="${container_tmp}"
       # NXF_HOME must hold the pre-cached plugins; with NXF_OFFLINE=true a wrong one fails
       # obscurely inside plugin resolution. Prefer the module's value, falling back to a
       # sibling directory that does have plugins/.
@@ -1248,43 +1167,10 @@ BEFOREEOF
       # values that vary by site are substituted; the shape is the same everywhere.
       if [ "~{scheduler}" = "slurm" ]; then
         bind_list=(~{sep=" " singularity_binds})
-        # Nextflow launches the container with the environment cleared except for PATH, so
-        # the setting exported above never reaches the runtime in a process: it falls back
-        # to its built-in default and unpacks the image onto a noexec mount. Carry it in
-        # with a wrapper early on PATH, which runs the real binary resolved while the
-        # wrapper is written rather than through PATH, so it cannot call itself. The
-        # directory is chosen here rather than inherited, because the node that unpacks the
-        # image is not the one that wrote this file. The quoted heredoc keeps the snippet
-        # literal; it reaches a Groovy quoted string too, which would process a backslash
-        # escape, so it has to stay free of them.
-        container_before=$(cat << 'BEFOREEOF'
-for d in "${TMP:-}" "${TMPDIR:-}" "${PWD}"; do
-  [ -n "$d" ] && [ "$d" != "/tmp" ] && [ -d "$d" ] && [ -w "$d" ] || continue
-  p=$(mktemp "$d/exectest.XXXXXX" 2>/dev/null) || continue
-  { echo '#!/bin/sh'; echo 'exit 0'; } > "$p"
-  if chmod +x "$p" 2>/dev/null && "$p" 2>/dev/null; then rm -f "$p"; export TMPDIR="$d"; break; fi
-  rm -f "$p"
-done
-[ -n "${TMPDIR:-}" ] && [ "${TMPDIR}" != "/tmp" ] || { echo "ERROR: no writable directory that allows execution; set TMP to one" >&2; exit 1; }
-export SINGULARITY_TMPDIR="${TMPDIR}" APPTAINER_TMPDIR="${TMPDIR}"
-shim="${PWD}/.container-shim"
-mkdir -p "${shim}"
-for exe in singularity apptainer; do
-  real=$(command -v "${exe}" 2>/dev/null) || continue
-  { echo '#!/bin/sh'
-    echo "export SINGULARITY_TMPDIR=${TMPDIR} APPTAINER_TMPDIR=${TMPDIR}"
-    echo "exec ${real} " '"$@"'
-  } > "${shim}/${exe}"
-  chmod +x "${shim}/${exe}"
-done
-export PATH="${shim}:${PATH}"
-BEFOREEOF
-)
         {
           echo "executor { name = 'slurm' }"
           echo "process {"
           echo "    queue = '~{slurm_partition}'"
-          echo "    beforeScript = '''${container_before}'''"
           # Slurm enforces the memory request as RSS. A JVM sized at the module default of
           # ~95% of it leaves nothing for the helper processes the tools fork, and the cgroup
           # kills the job. Keep a quarter of the request outside the heap. Processes that do

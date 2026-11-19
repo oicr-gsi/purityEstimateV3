@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-11-17
+### Changed
+- `oncoanalyser/3.0.0.1` and `apptainer/1.4.5`, running the pipeline under apptainer rather
+  than singularity 3.9.4. The same software; only the container runtime differs. Apptainer
+  mounts an image rather than unpacking it into a temporary directory, so nothing of ours
+  runs before a Nextflow process any more.
+
+
+## [1.5.0] - 2026-09-29
+### Added
+- A reduced summary, `{prefix}.wisp_SNV_summary.tsv`, carrying only the fields an
+  SNV-MRD assessment reads.
+
+### Changed
+- Label each summary row with the sample it measured rather than the subject, so
+  timepoints from one subject stay distinct when their summaries are read together.
+
+## [1.4.0] - 2026-09-23
+### Changed
+- Tracks the oncoanalyser 3.0.0 release rather than 3.0.0-rc.3: `modules` moves to
+  `oncoanalyser/3.0.0` and `oncoanalyser-data/3.0.0--8`, the suffix naming the HMF resource
+  bundle the data module carries.
+- `--hmf_genomes_base` becomes `--ref_data_genomes_base`, which is what 3.0.0 calls it. The
+  old name would not have failed the run: an unrecognised parameter is a warning, so the
+  genome would have resolved to the upstream default and the run died later on a missing
+  reference.
+- The generated slurm overlay retries on exit codes 175 to 177 rather than 175 alone,
+  matching the pipeline's own retry list.
+
 ## [1.3.0] - 2026-08-28
 ### Added
 - `scheduler` defaults to empty, meaning `validate_inputs` decides from the submit command

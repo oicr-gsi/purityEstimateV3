@@ -282,6 +282,14 @@
                     }
                 ],
                 "type": "ALL"
+            },
+            "purityEstimateV3.wisp_snv_summary": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_01_WG_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
             }
         },
         "validators": [
@@ -502,6 +510,14 @@
                 "type": "ALL"
             },
             "purityEstimateV3.wisp_tarballs": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wisp_snv_summary": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_02_PE_@JENKINSID@"
@@ -823,6 +839,14 @@
                 "type": "ALL"
             },
             "purityEstimateV3.wisp_tarballs": {
+                "contents": [
+                    {
+                        "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
+                    }
+                ],
+                "type": "ALL"
+            },
+            "purityEstimateV3.wisp_snv_summary": {
                 "contents": [
                     {
                         "outputDirectory": "@SCRATCH@/@DATE@_Workflow_purityEstimateV3_test_03_WG_PE_@JENKINSID@"
